@@ -1,0 +1,246 @@
+:root {
+  --bg: #f4efe5;
+  --panel: #fffdf8;
+  --ink: #1f2937;
+  --muted: #5b6470;
+  --accent: #0f766e;
+  --accent-2: #b45309;
+  --line: #d6d3d1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  background:
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.12), transparent 28%),
+    radial-gradient(circle at left center, rgba(180, 83, 9, 0.10), transparent 24%),
+    var(--bg);
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+}
+
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 28px 40px 8px;
+}
+
+.site-header h1,
+.hero-card h2,
+.job-head h2 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
+}
+
+.page-shell {
+  padding: 20px 40px 48px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.lede,
+.hint {
+  color: var(--muted);
+}
+
+.hero-card,
+.upload-card,
+.status-card,
+.trace-card,
+.report-card,
+.chart-card {
+  background: var(--panel);
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
+}
+
+.hero-card,
+.upload-card,
+.status-card,
+.trace-card,
+.report-card {
+  padding: 24px;
+}
+
+.hero-card {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 20px;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.meta-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(244,239,229,0.7));
+}
+
+.meta-card span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.upload-card,
+.panel-shell,
+.trace-card,
+.report-layout {
+  margin-top: 24px;
+}
+
+.upload-form {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 280px;
+}
+
+input[type="file"] {
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+button,
+.ghost-button {
+  border: none;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+}
+
+.ghost-button {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.job-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+}
+
+.status-row,
+.action-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  display: inline-flex;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.status-queued { background: #e0f2fe; color: #075985; }
+.status-running { background: #ecfccb; color: #3f6212; }
+.status-reviewing { background: #fef3c7; color: #92400e; }
+.status-completed { background: #dcfce7; color: #166534; }
+.status-failed { background: #fee2e2; color: #991b1b; }
+
+.report-layout {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 20px;
+}
+
+.chart-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.chart-card {
+  padding: 18px;
+  min-height: 280px;
+}
+
+.chart-card canvas {
+  width: 100% !important;
+  height: 220px !important;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.error-text {
+  color: #991b1b;
+  font-weight: 700;
+}
+
+@media (max-width: 960px) {
+  .page-shell,
+  .site-header {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .hero-card,
+  .report-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
+}

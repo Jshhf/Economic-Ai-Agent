@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Resume-ready project</p>
+    <h2>双 Agent 经济分析平台</h2>
+    <p class="lede">
+      这个 demo 展示了多 Agent 编排、工具调用、异步任务、SQLite 持久化和轻量前端。
+      {% if openai_enabled %}
+      当前已检测到 `OPENAI_API_KEY`，会优先走真实 OpenAI agent 链路。
+      {% else %}
+      当前未检测到 `OPENAI_API_KEY`，会自动走本地 fallback agent 链路。
+      {% endif %}
+    </p>
+  </div>
+  <div class="meta-grid">
+    <div class="meta-card"><span>Data Agent</span><strong>Tool Calling</strong></div>
+    <div class="meta-card"><span>Economist Agent</span><strong>Review + Handoff</strong></div>
+    <div class="meta-card"><span>Backend</span><strong>FastAPI + SQLite</strong></div>
+  </div>
+</section>
+
+<section class="upload-card">
+  <h3>上传经济数据 CSV</h3>
+  <form action="/jobs" method="post" enctype="multipart/form-data" class="upload-form">
+    <label class="file-label">
+      <span>选择一个 CSV 文件</span>
+      <input type="file" name="file" accept=".csv" required>
+    </label>
+    <button type="submit">创建分析任务</button>
+  </form>
+  <p class="hint">示例数据路径：{{ sample_path }}</p>
+</section>
+{% endblock %}
