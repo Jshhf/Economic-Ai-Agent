@@ -1,0 +1,131 @@
+<div class="status-card">
+  <div class="status-row">
+    <span class="status-pill status-{{ job.status }}">{{ job.status }}</span>
+    <span>当前阶段：{{ job.current_stage }}</span>
+  </div>
+  <p>创建时间：{{ job.created_at }}</p>
+  {% if job.started_at %}<p>开始时间：{{ job.started_at }}</p>{% endif %}
+  {% if job.finished_at %}<p>结束时间：{{ job.finished_at }}</p>{% endif %}
+  {% if job.error_message %}<p class="error-text">错误：{{ job.error_message }}</p>{% endif %}
+</div>
+
+{% if report %}
+<section class="report-layout">
+  <article class="report-card markdown-body">
+    {{ report_html | safe }}
+  </article>
+  <aside class="chart-stack">
+    <div id="panel-charts" data-charts='{{ chart_json | safe }}'></div>
+  </aside>
+</section>
+
+<section class="trace-card">
+  <h3>Agent Runs</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Agent</th>
+        <th>Status</th>
+        <th>Handoff</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in trace.agent_runs %}
+      <tr>
+        <td>{{ row.phase }}</td>
+        <td>{{ row.agent_name }}</td>
+        <td>{{ row.status }}</td>
+        <td>{{ row.handoff_to or "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="trace-card">
+  <h3>Tool Calls</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Agent</th>
+        <th>Tool</th>
+        <th>Success</th>
+        <th>Duration</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in trace.tool_calls %}
+      <tr>
+        <td>{{ row.phase }}</td>
+        <td>{{ row.agent_name }}</td>
+        <td>{{ row.tool_name }}</td>
+        <td>{{ row.success }}</td>
+        <td>{{ row.duration_ms or "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script>
+  (function () {
+    const root = document.getElementById("panel-charts");
+    if (!root || root.dataset.rendered === "1") return;
+    const payloads = JSON.parse(root.dataset.charts || "[]");
+    payloads.forEach((payload, index) => {
+      const card = document.createElement("section");
+      card.className = "chart-card";
+      const title = document.createElement("h3");
+      title.textContent = payload.title;
+      const canvas = document.createElement("canvas");
+      canvas.id = `panel-chart-${index}`;
+      card.appendChild(title);
+      card.appendChild(canvas);
+      root.appendChild(card);
+      const chartType = payload.chart_type === "overall_trend" ? "line" : "bar";
+      new Chart(canvas.getContext("2d"), {
+        type: chartType,
+        data: {
+          labels: payload.labels,
+          datasets: payload.datasets.map((dataset, datasetIndex) => ({
+            label: dataset.label,
+            data: dataset.data,
+            borderColor: ["#0f766e", "#1d4ed8", "#b45309"][datasetIndex % 3],
+            backgroundColor: ["rgba(15,118,110,0.25)", "rgba(29,78,216,0.25)", "rgba(180,83,9,0.25)"][datasetIndex % 3],
+            fill: chartType === "line",
+            tension: 0.25
+          }))
+        },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+    });
+    root.dataset.rendered = "1";
+  })();
+</script>
+{% elif trace %}
+<section class="trace-card">
+  <h3>失败前的 Agent 轨迹</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Agent</th>
+        <th>Status</th>
+        <th>Handoff</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in trace.agent_runs %}
+      <tr>
+        <td>{{ row.phase }}</td>
+        <td>{{ row.agent_name }}</td>
+        <td>{{ row.status }}</td>
+        <td>{{ row.handoff_to or "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}

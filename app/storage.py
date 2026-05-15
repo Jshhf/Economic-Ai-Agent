@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from app.schemas import AgentRunRecord, JobStatusResponse, ToolCallRecord
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso_now() -> str:
+    return utcnow().isoformat()
+
+
+def summarize_payload(payload: Any, limit: int = 600) -> str:
+    if payload is None:
+        return ""
+    if hasattr(payload, "model_dump_json"):
+        text = payload.model_dump_json()
+    elif isinstance(payload, (dict, list)):
+        text = json.dumps(payload, ensure_ascii=False)
+    else:
+        text = str(payload)
+    return text[:limit]
+
+
+@dataclass(slots=True)
+class Storage:
+    database_path: Path
+
+    def __post_init__(self) -> None:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.database_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def init_db(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    current_stage TEXT NOT NULL,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    artifact_type TEXT NOT NULL,
+                    artifact_key TEXT NOT NULL,
+                    content_json TEXT,
+                    content_text TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    model_name TEXT,
+                    status TEXT NOT NULL,
+                    handoff_to TEXT,
+                    input_summary TEXT,
+                    output_summary TEXT,
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_call_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    call_id TEXT NOT NULL UNIQUE,
+                    phase TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_json TEXT,
+                    result_summary TEXT,
+                    success INTEGER,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    duration_ms INTEGER
+                );
+                """
+            )
+
+    def create_job(self, job_id: str, source_path: str, original_filename: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_jobs (
+                    job_id, source_path, original_filename, status, current_stage, created_at
+                ) VALUES (?, ?, ?, 'queued', 'queued', ?)
+                """,
+                (job_id, source_path, original_filename, iso_now()),
+            )
+
+    def update_job_status(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        current_stage: str,
+        error_message: str | None = None,
+        started: bool = False,
+        finished: bool = False,
+    ) -> None:
+        fields = ["status = ?", "current_stage = ?", "error_message = ?"]
+        values: list[Any] = [status, current_stage, error_message]
+        if started:
+            fields.append("started_at = ?")
+            values.append(iso_now())
+        if finished:
+            fields.append("finished_at = ?")
+            values.append(iso_now())
+        values.append(job_id)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE analysis_jobs SET {', '.join(fields)} WHERE job_id = ?",
+                values,
+            )
+
+    def get_job(self, job_id: str) -> JobStatusResponse:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return JobStatusResponse(
+            job_id=row["job_id"],
+            status=row["status"],
+            current_stage=row["current_stage"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+            finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
+            error_message=row["error_message"],
+        )
+
+    def get_job_source_path(self, job_id: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT source_path FROM analysis_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return str(row["source_path"])
+
+    def add_artifact(
+        self,
+        job_id: str,
+        artifact_type: str,
+        artifact_key: str,
+        *,
+        content_json: Any | None = None,
+        content_text: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    job_id, artifact_type, artifact_key, content_json, content_text, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    artifact_type,
+                    artifact_key,
+                    json.dumps(content_json, ensure_ascii=False) if content_json is not None else None,
+                    content_text,
+                    iso_now(),
+                ),
+            )
+
+    def get_latest_artifact(self, job_id: str, artifact_key: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT content_json, content_text
+                FROM artifacts
+                WHERE job_id = ? AND artifact_key = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (job_id, artifact_key),
+            ).fetchone()
+        if row is None:
+            raise KeyError((job_id, artifact_key))
+        payload: dict[str, Any] = {}
+        if row["content_json"] is not None:
+            payload["content_json"] = json.loads(row["content_json"])
+        if row["content_text"] is not None:
+            payload["content_text"] = row["content_text"]
+        return payload
+
+    def list_artifacts(self, job_id: str) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE job_id = ? ORDER BY id ASC",
+                (job_id,),
+            ).fetchall()
+        return list(rows)
+
+    def log_agent_result(
+        self,
+        job_id: str,
+        *,
+        phase: str,
+        agent_name: str,
+        model_name: str | None,
+        status: str,
+        input_summary: str | None = None,
+        output_summary: str | None = None,
+        handoff_to: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_runs (
+                    job_id, phase, agent_name, model_name, status, handoff_to,
+                    input_summary, output_summary, created_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    phase,
+                    agent_name,
+                    model_name,
+                    status,
+                    handoff_to,
+                    input_summary,
+                    output_summary,
+                    iso_now(),
+                    iso_now(),
+                ),
+            )
+
+    def log_tool_start(
+        self,
+        job_id: str,
+        *,
+        call_id: str,
+        phase: str,
+        agent_name: str,
+        tool_name: str,
+        arguments_json: str | None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO tool_call_logs (
+                    job_id, call_id, phase, agent_name, tool_name, arguments_json, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, call_id, phase, agent_name, tool_name, arguments_json, iso_now()),
+            )
+
+    def log_tool_end(
+        self,
+        job_id: str,
+        *,
+        call_id: str,
+        result_summary: str,
+        success: bool,
+    ) -> None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT started_at FROM tool_call_logs WHERE job_id = ? AND call_id = ?",
+                (job_id, call_id),
+            ).fetchone()
+            started_at = datetime.fromisoformat(row["started_at"]) if row else utcnow()
+            duration_ms = int((utcnow() - started_at).total_seconds() * 1000)
+            conn.execute(
+                """
+                UPDATE tool_call_logs
+                SET result_summary = ?, success = ?, finished_at = ?, duration_ms = ?
+                WHERE job_id = ? AND call_id = ?
+                """,
+                (result_summary, int(success), iso_now(), duration_ms, job_id, call_id),
+            )
+
+    def list_agent_runs(self, job_id: str) -> list[AgentRunRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_runs WHERE job_id = ? ORDER BY id ASC",
+                (job_id,),
+            ).fetchall()
+        return [
+            AgentRunRecord(
+                id=row["id"],
+                phase=row["phase"],
+                agent_name=row["agent_name"],
+                model_name=row["model_name"],
+                status=row["status"],
+                handoff_to=row["handoff_to"],
+                input_summary=row["input_summary"],
+                output_summary=row["output_summary"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+                finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
+            )
+            for row in rows
+        ]
+
+    def list_tool_calls(self, job_id: str) -> list[ToolCallRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tool_call_logs WHERE job_id = ? ORDER BY id ASC",
+                (job_id,),
+            ).fetchall()
+        return [
+            ToolCallRecord(
+                id=row["id"],
+                phase=row["phase"],
+                agent_name=row["agent_name"],
+                tool_name=row["tool_name"],
+                arguments_json=row["arguments_json"],
+                result_summary=row["result_summary"],
+                success=bool(row["success"]) if row["success"] is not None else None,
+                started_at=datetime.fromisoformat(row["started_at"]),
+                finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
+                duration_ms=row["duration_ms"],
+            )
+            for row in rows
+        ]

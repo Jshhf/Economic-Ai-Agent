@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="job-head">
+  <div>
+    <p class="eyebrow">Final Report</p>
+    <h2>{{ job_id }}</h2>
+  </div>
+</section>
+<section class="report-layout">
+  <article class="report-card markdown-body">
+    {{ report_html | safe }}
+  </article>
+  <aside class="chart-stack">
+    <div id="report-charts" data-charts='{{ chart_json | safe }}'></div>
+  </aside>
+</section>
+<script>
+  (function () {
+    const root = document.getElementById("report-charts");
+    if (!root) return;
+    const payloads = JSON.parse(root.dataset.charts || "[]");
+    payloads.forEach((payload, index) => {
+      const card = document.createElement("section");
+      card.className = "chart-card";
+      const title = document.createElement("h3");
+      title.textContent = payload.title;
+      const canvas = document.createElement("canvas");
+      canvas.id = `report-chart-${index}`;
+      card.appendChild(title);
+      card.appendChild(canvas);
+      root.appendChild(card);
+      const chartType = payload.chart_type === "overall_trend" ? "line" : "bar";
+      new Chart(canvas.getContext("2d"), {
+        type: chartType,
+        data: {
+          labels: payload.labels,
+          datasets: payload.datasets.map((dataset, datasetIndex) => ({
+            label: dataset.label,
+            data: dataset.data,
+            borderColor: ["#0f766e", "#1d4ed8", "#b45309"][datasetIndex % 3],
+            backgroundColor: ["rgba(15,118,110,0.25)", "rgba(29,78,216,0.25)", "rgba(180,83,9,0.25)"][datasetIndex % 3],
+            fill: chartType === "line",
+            tension: 0.25
+          }))
+        },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+    });
+  })();
+</script>
+{% endblock %}
