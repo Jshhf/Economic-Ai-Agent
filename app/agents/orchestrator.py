@@ -10,23 +10,39 @@ from typing import Any
 from agents import Agent, ModelSettings, RunContextWrapper, RunHooks, Runner, function_tool, handoff
 
 from app.config import PROJECT_ROOT, Settings
-from app.schemas import CityMetric, EvidencePack, FinalReport, FollowUpRequest, SupplementalEvidence
+from app.schemas import (
+    CityMetric,
+    EvidencePack,
+    FinalReport,
+    FollowUpRequest,
+    SourceReference,
+    SupplementalEvidence,
+)
 from app.services.analytics import AnalyticsService
 from app.services.knowledge_base import KnowledgeBase
+from app.services.mcp import MCPRegistry, build_default_mcp_registry
+from app.services.observability import ObservabilityService
+from app.services.rag import RagService
+from app.skills import SkillRuntimeConfig, get_skill, get_skill_runtime
 from app.storage import Storage, summarize_payload
 
 
 @dataclass(slots=True)
 class AgentRuntime:
     job_id: str
+    skill_id: str
     storage: Storage
     settings: Settings
     analytics: AnalyticsService
     knowledge_base: KnowledgeBase
+    rag: RagService
+    mcp_registry: MCPRegistry
+    observability: ObservabilityService
     phase: str
     evidence_pack: EvidencePack | None = None
     follow_up_request: FollowUpRequest | None = None
     supplemental_evidence: SupplementalEvidence | None = None
+    source_references: list[SourceReference] = field(default_factory=list)
     local_trace: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -34,19 +50,25 @@ class AgentRuntime:
     def use_openai(self) -> bool:
         return bool(self.settings.openai_api_key)
 
+    @property
+    def skill(self) -> SkillRuntimeConfig:
+        return get_skill_runtime(self.skill_id)
 
-def _tool_call_id(tool_name: str) -> str:
-    return f"{tool_name}-{uuid.uuid4().hex}"
+
+def _call_id(name: str) -> str:
+    return f"{name}-{uuid.uuid4().hex}"
 
 
-def _log_tool_start(
+def _log_call_start(
     runtime: AgentRuntime,
     *,
     agent_name: str,
     tool_name: str,
     arguments: dict[str, Any],
+    call_kind: str = "tool",
+    provider: str | None = None,
 ) -> str:
-    call_id = _tool_call_id(tool_name)
+    call_id = _call_id(tool_name)
     runtime.storage.log_tool_start(
         runtime.job_id,
         call_id=call_id,
@@ -54,11 +76,13 @@ def _log_tool_start(
         agent_name=agent_name,
         tool_name=tool_name,
         arguments_json=json.dumps(arguments, ensure_ascii=False),
+        call_kind=call_kind,
+        provider=provider,
     )
     return call_id
 
 
-def _log_tool_end(runtime: AgentRuntime, *, call_id: str, result: Any, success: bool) -> None:
+def _log_call_end(runtime: AgentRuntime, *, call_id: str, result: Any, success: bool) -> None:
     runtime.storage.log_tool_end(
         runtime.job_id,
         call_id=call_id,
@@ -71,31 +95,40 @@ def _tool_wrapper(ctx: RunContextWrapper[AgentRuntime]) -> AgentRuntime:
     return ctx.context
 
 
+def _register_sources(runtime: AgentRuntime, sources: list[SourceReference]) -> list[SourceReference]:
+    existing = {item.source_id for item in runtime.source_references}
+    for source in sources:
+        if source.source_id in existing:
+            continue
+        runtime.source_references.append(source)
+        runtime.storage.add_source_reference(runtime.job_id, source)
+        existing.add(source.source_id)
+    return sources
+
+
 def build_data_tools(agent_name: str) -> list[Any]:
     @function_tool
     def inspect_dataset(ctx: RunContextWrapper[AgentRuntime]) -> dict[str, Any]:
-        """Inspect dataset shape, columns, dates, and missing values."""
         runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="inspect_dataset", arguments={})
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="inspect_dataset", arguments={})
         try:
             result = runtime.analytics.dataset_overview().model_dump()
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
     def latest_snapshot(ctx: RunContextWrapper[AgentRuntime]) -> dict[str, Any]:
-        """Get the latest period snapshot of overall employment change."""
         runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="latest_snapshot", arguments={})
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="latest_snapshot", arguments={})
         try:
             result = runtime.analytics.latest_snapshot()
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
@@ -104,16 +137,15 @@ def build_data_tools(agent_name: str) -> list[Any]:
         metric: str = "emp",
         top_n: int = 5,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Rank cities for a metric in the latest available period."""
         runtime = _tool_wrapper(ctx)
         args = {"metric": metric, "top_n": top_n}
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="city_rankings", arguments=args)
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="city_rankings", arguments=args)
         try:
             result = runtime.analytics.city_rankings(metric=metric, top_n=top_n)
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
@@ -123,16 +155,15 @@ def build_data_tools(agent_name: str) -> list[Any]:
         metric: str = "emp",
         weeks: int = 6,
     ) -> list[dict[str, Any]]:
-        """Return recent city-level trend points for selected cities."""
         runtime = _tool_wrapper(ctx)
         args = {"city_ids": city_ids, "metric": metric, "weeks": weeks}
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="city_trend", arguments=args)
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="city_trend", arguments=args)
         try:
             result = [item.model_dump() for item in runtime.analytics.city_trend(city_ids=city_ids, metric=metric, weeks=weeks)]
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
@@ -140,16 +171,15 @@ def build_data_tools(agent_name: str) -> list[Any]:
         ctx: RunContextWrapper[AgentRuntime],
         lookback_weeks: int = 4,
     ) -> list[dict[str, Any]]:
-        """Compare employment changes across income groups."""
         runtime = _tool_wrapper(ctx)
         args = {"lookback_weeks": lookback_weeks}
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="income_group_comparison", arguments=args)
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="income_group_comparison", arguments=args)
         try:
             result = [item.model_dump() for item in runtime.analytics.income_group_comparison(lookback_weeks=lookback_weeks)]
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
@@ -160,7 +190,6 @@ def build_data_tools(agent_name: str) -> list[Any]:
         z_threshold: float = 1.8,
         limit: int = 6,
     ) -> list[dict[str, Any]]:
-        """Detect recent anomalies relative to the recent history."""
         runtime = _tool_wrapper(ctx)
         args = {
             "metric": metric,
@@ -168,7 +197,7 @@ def build_data_tools(agent_name: str) -> list[Any]:
             "z_threshold": z_threshold,
             "limit": limit,
         }
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="detect_anomalies", arguments=args)
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="detect_anomalies", arguments=args)
         try:
             result = [
                 item.model_dump()
@@ -179,23 +208,22 @@ def build_data_tools(agent_name: str) -> list[Any]:
                     limit=limit,
                 )
             ]
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
     def build_chart_payload(ctx: RunContextWrapper[AgentRuntime]) -> list[dict[str, Any]]:
-        """Build chart payloads for trend, city rankings, and income groups."""
         runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="build_chart_payload", arguments={})
+        call_id = _log_call_start(runtime, agent_name=agent_name, tool_name="build_chart_payload", arguments={})
         try:
             result = [chart.model_dump() for chart in runtime.analytics.build_chart_payloads()]
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
+            _log_call_end(runtime, call_id=call_id, result=result, success=True)
             return result
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     return [
@@ -211,45 +239,50 @@ def build_data_tools(agent_name: str) -> list[Any]:
 
 def build_knowledge_tools(agent_name: str) -> list[Any]:
     @function_tool
-    def read_indicator_definitions(ctx: RunContextWrapper[AgentRuntime]) -> str:
-        """Read the local indicator definitions document."""
+    def rag_search(ctx: RunContextWrapper[AgentRuntime], query: str) -> list[dict[str, Any]]:
         runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="read_indicator_definitions", arguments={})
+        call_id = _log_call_start(
+            runtime,
+            agent_name=agent_name,
+            tool_name="rag_search",
+            arguments={"query": query},
+            call_kind="rag",
+            provider="local-knowledge",
+        )
         try:
-            result = runtime.knowledge_base.read_indicator_definitions()
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
-            return result
+            result = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
+            _register_sources(runtime, result)
+            runtime.observability.emit_metric("rag_retrieval_count", float(len(result)), job_id=runtime.job_id, labels={"skill_id": runtime.skill_id})
+            _log_call_end(runtime, call_id=call_id, result=[item.model_dump() for item in result], success=True)
+            return [item.model_dump() for item in result]
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            runtime.observability.emit_metric("rag_error_count", 1.0, job_id=runtime.job_id, labels={"skill_id": runtime.skill_id})
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
     @function_tool
-    def read_methodology_notes(ctx: RunContextWrapper[AgentRuntime]) -> str:
-        """Read the local methodology notes document."""
+    def mcp_search(ctx: RunContextWrapper[AgentRuntime], source_name: str, query: str) -> list[dict[str, Any]]:
         runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="read_methodology_notes", arguments={})
+        call_id = _log_call_start(
+            runtime,
+            agent_name=agent_name,
+            tool_name=f"mcp_search:{source_name}",
+            arguments={"source_name": source_name, "query": query},
+            call_kind="mcp",
+            provider=source_name,
+        )
         try:
-            result = runtime.knowledge_base.read_methodology_notes()
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
-            return result
+            result = runtime.mcp_registry.search(source_name, query, limit=3)
+            _register_sources(runtime, result)
+            runtime.observability.emit_metric("mcp_call_count", 1.0, job_id=runtime.job_id, labels={"source_name": source_name})
+            _log_call_end(runtime, call_id=call_id, result=[item.model_dump() for item in result], success=True)
+            return [item.model_dump() for item in result]
         except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
+            runtime.observability.emit_metric("mcp_error_count", 1.0, job_id=runtime.job_id, labels={"source_name": source_name})
+            _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
-    @function_tool
-    def read_report_rubric(ctx: RunContextWrapper[AgentRuntime]) -> str:
-        """Read the local report writing rubric."""
-        runtime = _tool_wrapper(ctx)
-        call_id = _log_tool_start(runtime, agent_name=agent_name, tool_name="read_report_rubric", arguments={})
-        try:
-            result = runtime.knowledge_base.read_report_rubric()
-            _log_tool_end(runtime, call_id=call_id, result=result, success=True)
-            return result
-        except Exception as exc:
-            _log_tool_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
-            raise
-
-    return [read_indicator_definitions, read_methodology_notes, read_report_rubric]
+    return [rag_search, mcp_search]
 
 
 class AnalysisRunHooks(RunHooks[AgentRuntime]):
@@ -262,6 +295,7 @@ class AnalysisRunHooks(RunHooks[AgentRuntime]):
             model_name=str(agent.model) if agent.model else None,
             status="completed",
             output_summary=summarize_payload(output),
+            skill_id=runtime.skill_id,
         )
 
     def on_handoff(
@@ -279,15 +313,17 @@ class AnalysisRunHooks(RunHooks[AgentRuntime]):
             status="handoff",
             handoff_to=to_agent.name,
             output_summary="Handoff triggered.",
+            skill_id=runtime.skill_id,
         )
 
 
-def _data_agent_instructions(_: RunContextWrapper[AgentRuntime], __: Agent[AgentRuntime]) -> str:
+def _data_agent_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[AgentRuntime]) -> str:
+    skill = get_skill(ctx.context.skill_id)
     return (
-        "You are the Data Analyst Agent. Use the available tools to inspect the dataset, "
-        "measure latest employment changes, rank cities, compare income groups, identify anomalies, "
-        "and inspect chart payloads. You must call tools before returning. "
-        "Return a strict EvidencePack JSON object with concise key findings and data quality notes."
+        f"You are the Data Analyst Agent for skill `{skill.skill_id}` ({skill.name}). "
+        "Use dataset tools to inspect the data, measure latest employment changes, rank cities, "
+        "compare income groups, identify anomalies, and inspect chart payloads. "
+        "Return a strict EvidencePack JSON object with concise findings."
     )
 
 
@@ -302,17 +338,20 @@ def _follow_up_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[Agent
 
 
 def _economist_writer_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[AgentRuntime]) -> str:
+    skill = get_skill(ctx.context.skill_id)
     evidence = ctx.context.evidence_pack.model_dump_json(indent=2) if ctx.context.evidence_pack else "{}"
     supplemental = (
         ctx.context.supplemental_evidence.model_dump_json(indent=2)
         if ctx.context.supplemental_evidence
         else "{}"
     )
+    source_names = ", ".join(source.title for source in ctx.context.source_references[:6]) or "none"
     return (
-        "You are the Economist Agent. Use the knowledge tools before returning. "
-        "Generate a Chinese FinalReport with five sections: overview, city changes, income signals, "
-        "risks, conclusion, plus next observation points. Reference numbers from the evidence. "
-        f"Evidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
+        f"You are the Economist Agent for skill `{skill.skill_id}` ({skill.name}). "
+        "Use rag_search and mcp_search before returning. "
+        "Generate a Chinese FinalReport with overview, city changes, income signals, risks, conclusion, "
+        "and next observation points. Reference evidence and sources. "
+        f"Known sources: {source_names}\n\nEvidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
     )
 
 
@@ -342,7 +381,7 @@ def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[Agen
             "You are the Economist Review Agent. Review the evidence pack carefully. "
             "If the evidence is sufficient, return a Chinese FinalReport directly. "
             "If you need more support, hand off to the Data Follow-up Agent with a structured "
-            "FollowUpRequest that names the required tools and any focus cities or income groups."
+            "FollowUpRequest that names the required tools and focus cities or income groups."
         ),
         tools=knowledge_tools,
         handoffs=[
@@ -381,6 +420,15 @@ def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[Agen
     return data_agent, economist_review_agent, economist_writer_agent
 
 
+def _build_local_sources(runtime: AgentRuntime) -> list[SourceReference]:
+    query = f"{runtime.skill_id} employment trend anomalies methodology policy"
+    rag_sources = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
+    mcp_sources: list[SourceReference] = []
+    for source_name in get_skill(runtime.skill_id).mcp_sources:
+        mcp_sources.extend(runtime.mcp_registry.search(source_name, query, limit=2))
+    return _register_sources(runtime, rag_sources + mcp_sources)
+
+
 def run_data_analyst_fallback(runtime: AgentRuntime) -> EvidencePack:
     runtime.phase = "data_analysis"
     overview = runtime.analytics.dataset_overview()
@@ -393,16 +441,16 @@ def run_data_analyst_fallback(runtime: AgentRuntime) -> EvidencePack:
     missing_columns = [name for name, count in overview.missing_values.items() if count > 0]
     quality_notes = []
     if missing_columns:
-        quality_notes.append(f"缺失值出现在 {', '.join(missing_columns)}，分析按缺失而非零处理。")
-    quality_notes.append("城市名称映射表未提供，报告暂以 cityid 展示。")
-    quality_notes.append("第一版仅做横截面比较与近 6 周趋势观察，未做季节调整。")
+        quality_notes.append(f"Missing values appear in {', '.join(missing_columns)} and are treated as nulls instead of zeros.")
+    quality_notes.append("City names are not provided, so the report continues to display city IDs.")
+    quality_notes.append("The MVP focuses on cross-sectional comparison and recent trend review without seasonal adjustment.")
 
     top = rankings["top"]
     bottom = rankings["bottom"]
     findings = [
-        f"最新一期总体就业变化为 {snapshot['overall_emp_change']:.4f}。",
-        f"表现最强的城市是 City {top[0]['cityid']}，就业变化 {top[0]['value']:.4f}。",
-        f"表现最弱的城市是 City {bottom[0]['cityid']}，就业变化 {bottom[0]['value']:.4f}。",
+        f"Latest overall employment change is {snapshot['overall_emp_change']:.4f}.",
+        f"Best-performing city is City {top[0]['cityid']} at {top[0]['value']:.4f}.",
+        f"Weakest-performing city is City {bottom[0]['cityid']} at {bottom[0]['value']:.4f}.",
     ]
     weakest_income = min(
         [item for item in income if item.latest_value is not None],
@@ -411,10 +459,10 @@ def run_data_analyst_fallback(runtime: AgentRuntime) -> EvidencePack:
     )
     if weakest_income:
         findings.append(
-            f"{weakest_income.segment} 是最新一期最弱的收入组，就业变化为 {weakest_income.latest_value:.4f}。"
+            f"{weakest_income.segment} is the weakest income cohort in the latest period at {weakest_income.latest_value:.4f}."
         )
     if anomalies:
-        findings.append(f"检测到 {len(anomalies)} 个显著异常城市，需补充解释。")
+        findings.append(f"Detected {len(anomalies)} notable anomaly signals that warrant explanation.")
 
     evidence = EvidencePack(
         dataset_overview=overview,
@@ -435,7 +483,9 @@ def run_data_analyst_fallback(runtime: AgentRuntime) -> EvidencePack:
         model_name="fallback-local",
         status="completed",
         output_summary=summarize_payload(evidence),
+        skill_id=runtime.skill_id,
     )
+    runtime.observability.emit_metric("tool_success_rate", 1.0, job_id=runtime.job_id, labels={"phase": runtime.phase})
     return evidence
 
 
@@ -449,15 +499,18 @@ def run_economist_review_fallback(runtime: AgentRuntime) -> FollowUpRequest | Fi
         status="completed",
         input_summary=summarize_payload(runtime.evidence_pack),
         output_summary="Fallback review completed.",
+        skill_id=runtime.skill_id,
     )
     evidence = runtime.evidence_pack
     assert evidence is not None
     top_city = evidence.top_cities[0].cityid if evidence.top_cities else 1
     bottom_city = evidence.bottom_cities[0].cityid if evidence.bottom_cities else 1
-    needs_follow_up = bool(evidence.anomalies) or abs(evidence.top_cities[0].value - evidence.bottom_cities[0].value) > 0.08
+    needs_follow_up = runtime.skill.review_requires_follow_up and (
+        bool(evidence.anomalies) or abs(evidence.top_cities[0].value - evidence.bottom_cities[0].value) > 0.08
+    )
     if needs_follow_up:
         request = FollowUpRequest(
-            reason="城市间分化或异常波动较强，需要补充城市趋势和收入分层证据。",
+            reason="The city-level divergence or anomalies are large enough to justify targeted follow-up.",
             required_tools=["city_trend", "income_group_comparison", "detect_anomalies"],
             focus_cities=[top_city, bottom_city],
             focus_income_groups=["emp_incq1", "emp_incbelowmed", "emp_incmiddle"],
@@ -471,6 +524,7 @@ def run_economist_review_fallback(runtime: AgentRuntime) -> FollowUpRequest | Fi
             status="handoff",
             handoff_to="Data Follow-up Agent",
             output_summary=summarize_payload(request),
+            skill_id=runtime.skill_id,
         )
         return request
     return _build_local_report(runtime)
@@ -479,25 +533,27 @@ def run_economist_review_fallback(runtime: AgentRuntime) -> FollowUpRequest | Fi
 def run_follow_up_fallback(runtime: AgentRuntime) -> SupplementalEvidence:
     runtime.phase = "economist_follow_up"
     request = runtime.follow_up_request or FollowUpRequest(
-        reason="默认补充分析。",
+        reason="Default follow-up analysis.",
         required_tools=["city_trend"],
         focus_cities=[],
         focus_income_groups=[],
     )
-    city_trends = runtime.analytics.city_trend(city_ids=request.focus_cities or [item.cityid for item in runtime.evidence_pack.top_cities[:2]])
+    city_trends = runtime.analytics.city_trend(
+        city_ids=request.focus_cities or [item.cityid for item in runtime.evidence_pack.top_cities[:2]]
+    )
     income_details = runtime.analytics.income_group_comparison()
     anomalies = runtime.analytics.detect_anomalies(limit=4)
     findings = []
     for city_trend_item in city_trends:
         if city_trend_item.points:
             findings.append(
-                f"City {city_trend_item.cityid} 最近 {len(city_trend_item.points)} 周的最新值为 {city_trend_item.points[-1].value:.4f}。"
+                f"City {city_trend_item.cityid} recent {len(city_trend_item.points)}-week value ends at {city_trend_item.points[-1].value:.4f}."
             )
     if anomalies:
-        findings.append(f"补充分析再次确认 {len(anomalies)} 个异常城市。")
+        findings.append(f"Follow-up analysis confirms {len(anomalies)} anomaly signals.")
     supplemental = SupplementalEvidence(
         reason=request.reason,
-        findings=findings or ["补充分析未发现超出主报告的新证据。"],
+        findings=findings or ["Follow-up analysis did not uncover evidence beyond the main report."],
         city_trends=city_trends,
         income_group_details=income_details,
         anomalies=anomalies,
@@ -510,6 +566,7 @@ def run_follow_up_fallback(runtime: AgentRuntime) -> SupplementalEvidence:
         model_name="fallback-local",
         status="completed",
         output_summary=summarize_payload(supplemental),
+        skill_id=runtime.skill_id,
     )
     runtime.supplemental_evidence = supplemental
     return supplemental
@@ -519,6 +576,9 @@ def _build_local_report(runtime: AgentRuntime) -> FinalReport:
     evidence = runtime.evidence_pack
     assert evidence is not None
     supplemental = runtime.supplemental_evidence
+    skill_definition = get_skill(runtime.skill_id)
+    sources = runtime.source_references or _build_local_sources(runtime)
+
     best_city = evidence.top_cities[0] if evidence.top_cities else None
     worst_city = evidence.bottom_cities[0] if evidence.bottom_cities else None
     weakest_income = min(
@@ -531,35 +591,54 @@ def _build_local_report(runtime: AgentRuntime) -> FinalReport:
         key=lambda item: item.latest_value or 0.0,
         default=None,
     )
-    overview = (
-        f"最新一期 {evidence.latest_period} 的总体就业变化为 {evidence.overall_emp_change:.4f}。"
-        f"从最近 {len(evidence.recent_trends)} 个观察点看，整体走势仍以短期波动为主。"
-    )
+
+    if runtime.skill.report_style == "briefing":
+        overview = (
+            f"The latest period {evidence.latest_period} shows overall employment change at {evidence.overall_emp_change:.4f}. "
+            "This briefing focuses on how the local signal aligns with external macro and policy context."
+        )
+    else:
+        overview = (
+            f"The latest observed period {evidence.latest_period} shows overall employment change at {evidence.overall_emp_change:.4f}. "
+            f"Across the latest {len(evidence.recent_trends)} observations, the series remains directionally recoverable but uneven."
+        )
+
     city_changes = (
-        f"城市分化较明显，City {best_city.cityid} 以 {best_city.value:.4f} 领跑，"
-        f"City {worst_city.cityid} 以 {worst_city.value:.4f} 处于末位。"
+        f"City divergence remains visible: City {best_city.cityid} leads at {best_city.value:.4f}, "
+        f"while City {worst_city.cityid} trails at {worst_city.value:.4f}."
         if best_city and worst_city
-        else "当前城市层面的排序信息不足。"
+        else "City-level ranking data is not sufficient for a reliable comparison."
     )
     if supplemental and supplemental.city_trends:
-        city_changes += " 补充趋势显示重点城市的近期波动仍未完全收敛。"
-    income_text = "收入分层信号整体可读。"
+        city_changes += " Follow-up city trends suggest the most extreme cities still show unstable short-term movement."
+
     if weakest_income and strongest_income:
         income_text = (
-            f"收入组之间存在分化，{strongest_income.segment} 最新值为 {strongest_income.latest_value:.4f}，"
-            f"而 {weakest_income.segment} 仅为 {weakest_income.latest_value:.4f}。"
+            f"Income segmentation is uneven: {strongest_income.segment} is strongest at {strongest_income.latest_value:.4f}, "
+            f"while {weakest_income.segment} is weakest at {weakest_income.latest_value:.4f}."
         )
-    risks = "主要风险来自区域恢复不均衡、部分收入组偏弱以及缺失值带来的解释不确定性。"
+    else:
+        income_text = "Income-group signals are readable but do not yet support a strong directional claim."
+
+    risks = "The main risks are regional dispersion, weak lower-income performance, and interpretation uncertainty from missing values."
     if evidence.anomalies:
-        risks += f" 当前还检测到 {len(evidence.anomalies)} 个异常城市，需要持续跟踪。"
-    conclusion = "综合来看，这份数据更像是“恢复中伴随分化”，而不是全面同步改善。"
+        risks += f" The latest run also detected {len(evidence.anomalies)} anomalies that require cautious interpretation."
+    if runtime.skill.report_style == "briefing":
+        risks += " Policy framing should avoid claiming causality from a single weekly snapshot."
+
+    conclusion = (
+        "Overall, the dataset looks more like a recovery with divergence than a synchronized improvement."
+        if runtime.skill.report_style != "briefing"
+        else "Overall, the local data and retrieved background context point to a selective recovery rather than a broad-based stabilization."
+    )
     observations = [
-        "继续跟踪总体就业变化是否延续改善。",
-        "观察头部与尾部城市之间的差距是否收敛。",
-        "关注低收入相关分组是否继续弱于总体。",
+        "Track whether overall employment change continues to improve over the next reporting periods.",
+        "Watch whether the gap between top and bottom cities narrows or widens further.",
+        "Monitor whether lower-income cohorts remain weaker than the aggregate trend.",
     ]
     if supplemental and supplemental.findings:
-        observations.append("复查补充分析涉及的重点城市，确认异常是一次性冲击还是趋势拐点。")
+        observations.append("Revisit follow-up cities to determine whether current anomalies are temporary shocks or trend breaks.")
+
     return FinalReport(
         overview=overview,
         city_changes=city_changes,
@@ -567,21 +646,46 @@ def _build_local_report(runtime: AgentRuntime) -> FinalReport:
         risks=risks,
         conclusion=conclusion,
         next_observation_points=observations,
+        skill_id=runtime.skill_id,
+        skill_name=skill_definition.name,
+        sources=sources,
+        cited_source_ids=[item.source_id for item in sources],
     )
+
+
+def _prime_fallback_sources(runtime: AgentRuntime) -> None:
+    if runtime.source_references:
+        return
+    query = f"{runtime.skill_id} employment anomalies policy methodology"
+    rag_call_id = _log_call_start(
+        runtime,
+        agent_name="Economist Writer Agent",
+        tool_name="rag_search",
+        arguments={"query": query},
+        call_kind="rag",
+        provider="local-knowledge",
+    )
+    rag_result = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
+    _register_sources(runtime, rag_result)
+    _log_call_end(runtime, call_id=rag_call_id, result=[item.model_dump() for item in rag_result], success=True)
+
+    for source_name in get_skill(runtime.skill_id).mcp_sources:
+        call_id = _log_call_start(
+            runtime,
+            agent_name="Economist Writer Agent",
+            tool_name=f"mcp_search:{source_name}",
+            arguments={"query": query},
+            call_kind="mcp",
+            provider=source_name,
+        )
+        result = runtime.mcp_registry.search(source_name, query, limit=2)
+        _register_sources(runtime, result)
+        _log_call_end(runtime, call_id=call_id, result=[item.model_dump() for item in result], success=True)
 
 
 def run_economist_writer_fallback(runtime: AgentRuntime) -> FinalReport:
     runtime.phase = "economist_writer"
-    # Read knowledge docs through storage-visible fallback calls so the trace still shows knowledge access.
-    for tool_name, reader in [
-        ("read_indicator_definitions", runtime.knowledge_base.read_indicator_definitions),
-        ("read_methodology_notes", runtime.knowledge_base.read_methodology_notes),
-        ("read_report_rubric", runtime.knowledge_base.read_report_rubric),
-    ]:
-        call_id = _log_tool_start(runtime, agent_name="Economist Writer Agent", tool_name=tool_name, arguments={})
-        document = reader()
-        _log_tool_end(runtime, call_id=call_id, result=document[:300], success=True)
-
+    _prime_fallback_sources(runtime)
     report = _build_local_report(runtime)
     runtime.storage.log_agent_result(
         runtime.job_id,
@@ -590,6 +694,7 @@ def run_economist_writer_fallback(runtime: AgentRuntime) -> FinalReport:
         model_name="fallback-local",
         status="completed",
         output_summary=summarize_payload(report),
+        skill_id=runtime.skill_id,
     )
     return report
 
@@ -604,7 +709,8 @@ def run_data_analyst_agent(runtime: AgentRuntime) -> EvidencePack:
     result = Runner.run_sync(
         data_agent,
         input=(
-            "Analyze the uploaded employment dataset. You must call dataset tools before returning. "
+            f"Analyze the uploaded employment dataset for skill `{runtime.skill_id}`. "
+            "You must call dataset tools before returning. "
             "Return a strict EvidencePack with key findings and data quality notes."
         ),
         context=runtime,
@@ -624,7 +730,8 @@ def run_economist_agent(runtime: AgentRuntime) -> FollowUpRequest | FinalReport:
     result = Runner.run_sync(
         economist_review_agent,
         input=(
-            "Review the evidence pack below. If it is sufficient, return FinalReport in Chinese. "
+            f"Review the evidence pack for skill `{runtime.skill_id}`. "
+            "If it is sufficient, return FinalReport in Chinese. "
             "If not, use handoff to request focused follow-up analysis.\n\n"
             f"{evidence_json}"
         ),
@@ -632,7 +739,12 @@ def run_economist_agent(runtime: AgentRuntime) -> FollowUpRequest | FinalReport:
         hooks=AnalysisRunHooks(),
     )
     if isinstance(result.final_output, FinalReport):
-        return result.final_output_as(FinalReport, raise_if_incorrect_type=True)
+        final_report = result.final_output_as(FinalReport, raise_if_incorrect_type=True)
+        final_report.skill_id = runtime.skill_id
+        final_report.skill_name = get_skill(runtime.skill_id).name
+        final_report.sources = runtime.source_references
+        final_report.cited_source_ids = [item.source_id for item in runtime.source_references]
+        return final_report
     if isinstance(result.final_output, SupplementalEvidence):
         runtime.supplemental_evidence = result.final_output_as(SupplementalEvidence, raise_if_incorrect_type=True)
         if runtime.follow_up_request is None:
@@ -659,24 +771,35 @@ def run_economist_writer_agent(runtime: AgentRuntime) -> FinalReport:
     result = Runner.run_sync(
         writer_agent,
         input=(
-            "Write the final Chinese economic report based on the evidence pack and supplemental evidence.\n\n"
+            f"Write the final Chinese economic report for skill `{runtime.skill_id}` based on the evidence pack and supplemental evidence.\n\n"
             f"EvidencePack:\n{evidence_json}\n\nSupplementalEvidence:\n{supplemental_json}"
         ),
         context=runtime,
         hooks=AnalysisRunHooks(),
     )
-    return result.final_output_as(FinalReport, raise_if_incorrect_type=True)
+    final_report = result.final_output_as(FinalReport, raise_if_incorrect_type=True)
+    final_report.skill_id = runtime.skill_id
+    final_report.skill_name = get_skill(runtime.skill_id).name
+    final_report.sources = runtime.source_references
+    final_report.cited_source_ids = [item.source_id for item in runtime.source_references]
+    return final_report
 
 
-def build_runtime(job_id: str, source_path: str, storage: Storage, settings: Settings) -> AgentRuntime:
+def build_runtime(job_id: str, source_path: str, storage: Storage, settings: Settings, *, skill_id: str) -> AgentRuntime:
     dataset_path = Path(source_path)
     knowledge_base = KnowledgeBase(PROJECT_ROOT / settings.knowledge_dir)
     analytics = AnalyticsService(dataset_path)
+    rag = RagService(PROJECT_ROOT / settings.knowledge_dir)
+    observability = ObservabilityService(storage)
     return AgentRuntime(
         job_id=job_id,
+        skill_id=skill_id,
         storage=storage,
         settings=settings,
         analytics=analytics,
         knowledge_base=knowledge_base,
+        rag=rag,
+        mcp_registry=build_default_mcp_registry(),
+        observability=observability,
         phase="queued",
     )

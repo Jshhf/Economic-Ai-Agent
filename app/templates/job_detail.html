@@ -4,10 +4,13 @@
   <div>
     <p class="eyebrow">Job Detail</p>
     <h2>{{ job_id }}</h2>
-    <p class="lede">页面会自动刷新任务状态，并在完成后展示报告、图表和工具调用轨迹。</p>
+    <p class="lede">
+      The panel refreshes automatically and shows skill selection, agent traces, tool/RAG/MCP calls, metrics, and report artifacts.
+    </p>
   </div>
   <div class="action-row">
-    <a class="ghost-button" href="/jobs/{{ job_id }}/report">单独查看报告</a>
+    <span class="chip">{{ job.skill_id }}</span>
+    <a class="ghost-button" href="/jobs/{{ job_id }}/report">Open final report</a>
   </div>
 </section>
 
@@ -18,6 +21,6 @@
   hx-swap="innerHTML"
   class="panel-shell"
 >
-  <div class="status-card">正在加载任务状态...</div>
+  <div class="status-card">Loading job status...</div>
 </section>
 {% endblock %}

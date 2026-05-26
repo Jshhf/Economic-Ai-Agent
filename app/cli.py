@@ -13,6 +13,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_local = subparsers.add_parser("run-local", help="Run a local analysis job against a CSV file")
     run_local.add_argument("--file", required=True, help="Path to the CSV file")
+    run_local.add_argument(
+        "--skill",
+        default="economic_report",
+        choices=["economic_report", "anomaly_investigation", "policy_briefing"],
+        help="Skill to execute for the analysis job",
+    )
     return parser
 
 
@@ -24,15 +30,17 @@ def main() -> None:
     runner = JobRunner(settings=settings, storage=storage)
 
     if args.command == "run-local":
-        job_id = runner.create_job_from_file(args.file)
+        job_id = runner.create_job_from_file(args.file, skill_id=args.skill)
         runner.run_analysis_job(job_id)
         job = storage.get_job(job_id)
         print(f"job_id={job_id}")
+        print(f"skill_id={job.skill_id}")
         print(f"status={job.status}")
         if job.status == "completed":
             report = runner.get_report_response(job_id)
             print(report.report_markdown)
         else:
+            print(f"failure_category={job.failure_category}")
             print(f"error={job.error_message}")
 
 

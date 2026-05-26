@@ -1,12 +1,14 @@
 <div class="status-card">
   <div class="status-row">
     <span class="status-pill status-{{ job.status }}">{{ job.status }}</span>
-    <span>当前阶段：{{ job.current_stage }}</span>
+    <span>Current stage: {{ job.current_stage }}</span>
+    <span class="chip">skill: {{ job.skill_id }}</span>
+    {% if job.failure_category %}<span class="chip chip-danger">{{ job.failure_category }}</span>{% endif %}
   </div>
-  <p>创建时间：{{ job.created_at }}</p>
-  {% if job.started_at %}<p>开始时间：{{ job.started_at }}</p>{% endif %}
-  {% if job.finished_at %}<p>结束时间：{{ job.finished_at }}</p>{% endif %}
-  {% if job.error_message %}<p class="error-text">错误：{{ job.error_message }}</p>{% endif %}
+  <p>Created at: {{ job.created_at }}</p>
+  {% if job.started_at %}<p>Started at: {{ job.started_at }}</p>{% endif %}
+  {% if job.finished_at %}<p>Finished at: {{ job.finished_at }}</p>{% endif %}
+  {% if job.error_message %}<p class="error-text">Error: {{ job.error_message }}</p>{% endif %}
 </div>
 
 {% if report %}
@@ -20,6 +22,21 @@
 </section>
 
 <section class="trace-card">
+  <h3>Referenced Sources</h3>
+  <ul class="detail-list">
+    {% for source in sources %}
+    <li>
+      <strong>{{ source.title }}</strong>
+      <p>{{ source.summary }}</p>
+      <span class="chip">{{ source.source_type }}</span>
+      <span class="chip">{{ source.provider }}</span>
+      {% if source.url %}<a href="{{ source.url }}" target="_blank" rel="noreferrer">open</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="trace-card">
   <h3>Agent Runs</h3>
   <table>
     <thead>
@@ -27,6 +44,7 @@
         <th>Phase</th>
         <th>Agent</th>
         <th>Status</th>
+        <th>Skill</th>
         <th>Handoff</th>
       </tr>
     </thead>
@@ -36,6 +54,7 @@
         <td>{{ row.phase }}</td>
         <td>{{ row.agent_name }}</td>
         <td>{{ row.status }}</td>
+        <td>{{ row.skill_id or "-" }}</td>
         <td>{{ row.handoff_to or "-" }}</td>
       </tr>
       {% endfor %}
@@ -44,13 +63,15 @@
 </section>
 
 <section class="trace-card">
-  <h3>Tool Calls</h3>
+  <h3>Runtime Calls</h3>
   <table>
     <thead>
       <tr>
+        <th>Kind</th>
         <th>Phase</th>
         <th>Agent</th>
-        <th>Tool</th>
+        <th>Name</th>
+        <th>Provider</th>
         <th>Success</th>
         <th>Duration</th>
       </tr>
@@ -58,15 +79,22 @@
     <tbody>
       {% for row in trace.tool_calls %}
       <tr>
+        <td>{{ row.call_kind }}</td>
         <td>{{ row.phase }}</td>
         <td>{{ row.agent_name }}</td>
         <td>{{ row.tool_name }}</td>
+        <td>{{ row.provider or "-" }}</td>
         <td>{{ row.success }}</td>
         <td>{{ row.duration_ms or "-" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+</section>
+
+<section class="trace-card">
+  <h3>Metrics</h3>
+  <pre class="metrics-block">{{ trace.metrics | tojson(indent=2) }}</pre>
 </section>
 
 <script>
@@ -106,13 +134,14 @@
 </script>
 {% elif trace %}
 <section class="trace-card">
-  <h3>失败前的 Agent 轨迹</h3>
+  <h3>Runtime Trace Before Failure</h3>
   <table>
     <thead>
       <tr>
         <th>Phase</th>
         <th>Agent</th>
         <th>Status</th>
+        <th>Skill</th>
         <th>Handoff</th>
       </tr>
     </thead>
@@ -122,10 +151,26 @@
         <td>{{ row.phase }}</td>
         <td>{{ row.agent_name }}</td>
         <td>{{ row.status }}</td>
+        <td>{{ row.skill_id or "-" }}</td>
         <td>{{ row.handoff_to or "-" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+</section>
+
+<section class="trace-card">
+  <h3>Sources Collected Before Failure</h3>
+  <ul class="detail-list">
+    {% for source in sources %}
+    <li>
+      <strong>{{ source.title }}</strong>
+      <p>{{ source.summary }}</p>
+      <span class="chip">{{ source.source_type }}</span>
+    </li>
+    {% else %}
+    <li>No sources were recorded before failure.</li>
+    {% endfor %}
+  </ul>
 </section>
 {% endif %}

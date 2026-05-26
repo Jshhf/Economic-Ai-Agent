@@ -2,33 +2,75 @@
 {% block content %}
 <section class="hero-card">
   <div>
-    <p class="eyebrow">Resume-ready project</p>
-    <h2>双 Agent 经济分析平台</h2>
+    <p class="eyebrow">Agent Runtime Platform</p>
+    <h2>Economic Agent Platform</h2>
     <p class="lede">
-      这个 demo 展示了多 Agent 编排、工具调用、异步任务、SQLite 持久化和轻量前端。
+      This project now presents a resume-ready AI Agent runtime with skill orchestration, RAG-enhanced analysis,
+      MCP-style external sources, and end-to-end observability.
       {% if openai_enabled %}
-      当前已检测到 `OPENAI_API_KEY`，会优先走真实 OpenAI agent 链路。
+      `OPENAI_API_KEY` is available, so the OpenAI agent path can run when needed.
       {% else %}
-      当前未检测到 `OPENAI_API_KEY`，会自动走本地 fallback agent 链路。
+      `OPENAI_API_KEY` is not configured, so the local fallback runtime remains the default demo path.
       {% endif %}
     </p>
   </div>
   <div class="meta-grid">
-    <div class="meta-card"><span>Data Agent</span><strong>Tool Calling</strong></div>
-    <div class="meta-card"><span>Economist Agent</span><strong>Review + Handoff</strong></div>
-    <div class="meta-card"><span>Backend</span><strong>FastAPI + SQLite</strong></div>
+    <div class="meta-card"><span>Runtime</span><strong>Skill + Tool + Trace</strong></div>
+    <div class="meta-card"><span>Knowledge</span><strong>RAG + MCP Sources</strong></div>
+    <div class="meta-card"><span>Ops</span><strong>Metrics + Failure Taxonomy</strong></div>
   </div>
 </section>
 
 <section class="upload-card">
-  <h3>上传经济数据 CSV</h3>
+  <h3>Run an analysis job</h3>
   <form action="/jobs" method="post" enctype="multipart/form-data" class="upload-form">
+    <label class="field-label">
+      <span>Select skill</span>
+      <select name="skill_id" required>
+        {% for skill in skills %}
+        <option value="{{ skill.skill_id }}" {% if loop.first %}selected{% endif %}>{{ skill.name }} ({{ skill.skill_id }})</option>
+        {% endfor %}
+      </select>
+    </label>
     <label class="file-label">
-      <span>选择一个 CSV 文件</span>
+      <span>Choose a CSV file</span>
       <input type="file" name="file" accept=".csv" required>
     </label>
-    <button type="submit">创建分析任务</button>
+    <button type="submit">Create analysis job</button>
   </form>
-  <p class="hint">示例数据路径：{{ sample_path }}</p>
+  <p class="hint">Sample dataset: {{ sample_path }}</p>
+</section>
+
+<section class="capability-grid">
+  <article class="trace-card">
+    <h3>Available Skills</h3>
+    <ul class="detail-list">
+      {% for skill in skills %}
+      <li>
+        <strong>{{ skill.name }}</strong>
+        <p>{{ skill.description }}</p>
+        <span class="chip">{{ skill.skill_id }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="trace-card">
+    <h3>MCP Sources</h3>
+    <ul class="detail-list">
+      {% for source in mcp_sources %}
+      <li><strong>{{ source }}</strong></li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="trace-card">
+    <h3>Local Knowledge Docs</h3>
+    <ul class="detail-list">
+      {% for doc in knowledge_docs %}
+      <li><strong>{{ doc }}</strong></li>
+      {% endfor %}
+    </ul>
+  </article>
 </section>
 {% endblock %}

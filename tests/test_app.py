@@ -9,6 +9,8 @@ from app.config import PROJECT_ROOT, Settings
 from app.main import create_app
 from app.services.analytics import AnalyticsService
 from app.services.data_loader import load_employment_data
+from app.services.rag import RagService
+from app.skills import list_skills
 
 
 DATA_FILE = PROJECT_ROOT / "data" / "Employment - City - Weekly.csv"
@@ -23,6 +25,19 @@ def build_test_settings(tmp_path: Path) -> Settings:
     )
     settings.ensure_directories(PROJECT_ROOT)
     return settings
+
+
+def wait_for_completion(client: TestClient, job_id: str) -> dict[str, object]:
+    deadline = time.time() + 20
+    payload: dict[str, object] = {}
+    while time.time() < deadline:
+        status_response = client.get(f"/api/jobs/{job_id}")
+        assert status_response.status_code == 200
+        payload = status_response.json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.2)
+    raise AssertionError("Job did not complete within the deadline.")
 
 
 def test_load_employment_data() -> None:
@@ -46,7 +61,24 @@ def test_analytics_service_contract() -> None:
     assert len(charts) == 3
 
 
-def test_api_job_flow(tmp_path: Path) -> None:
+def test_skill_registry_contract() -> None:
+    skills = list_skills()
+    assert len(skills) == 3
+    assert {skill.skill_id for skill in skills} == {
+        "economic_report",
+        "anomaly_investigation",
+        "policy_briefing",
+    }
+
+
+def test_rag_service_returns_local_knowledge() -> None:
+    rag = RagService(PROJECT_ROOT / "knowledge")
+    results = rag.search("indicator methodology employment", limit=3)
+    assert results
+    assert all(item.source_type == "local_knowledge" for item in results)
+
+
+def test_api_job_flow_with_default_skill(tmp_path: Path) -> None:
     settings = build_test_settings(tmp_path)
     app = create_app(settings)
     client = TestClient(app)
@@ -55,28 +87,65 @@ def test_api_job_flow(tmp_path: Path) -> None:
         response = client.post(
             "/api/jobs",
             files={"file": ("employment.csv", handle, "text/csv")},
+            data={"skill_id": "economic_report"},
         )
     assert response.status_code == 200
     job_id = response.json()["job_id"]
 
-    deadline = time.time() + 20
-    payload = {}
-    while time.time() < deadline:
-        status_response = client.get(f"/api/jobs/{job_id}")
-        assert status_response.status_code == 200
-        payload = status_response.json()
-        if payload["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.2)
-
+    payload = wait_for_completion(client, job_id)
     assert payload["status"] == "completed", payload
+    assert payload["skill_id"] == "economic_report"
 
     report_response = client.get(f"/api/jobs/{job_id}/report")
     trace_response = client.get(f"/api/jobs/{job_id}/trace")
+    sources_response = client.get(f"/api/jobs/{job_id}/sources")
     assert report_response.status_code == 200
     assert trace_response.status_code == 200
+    assert sources_response.status_code == 200
     report_payload = report_response.json()
     trace_payload = trace_response.json()
-    assert "经济分析报告" in report_payload["report_markdown"]
+    sources_payload = sources_response.json()
+    assert "Economic Analysis Report" in report_payload["report_markdown"]
+    assert report_payload["skill_id"] == "economic_report"
     assert len(report_payload["chart_payloads"]) == 3
     assert len(trace_payload["agent_runs"]) >= 2
+    assert any(row["call_kind"] == "rag" for row in trace_payload["tool_calls"])
+    assert any(row["call_kind"] == "mcp" for row in trace_payload["tool_calls"])
+    assert sources_payload["sources"]
+
+
+def test_policy_briefing_skill_path(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    with DATA_FILE.open("rb") as handle:
+        response = client.post(
+            "/api/jobs",
+            files={"file": ("employment.csv", handle, "text/csv")},
+            data={"skill_id": "policy_briefing"},
+        )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    payload = wait_for_completion(client, job_id)
+    assert payload["status"] == "completed", payload
+    assert payload["skill_id"] == "policy_briefing"
+
+    report_response = client.get(f"/api/jobs/{job_id}/report")
+    report_payload = report_response.json()
+    assert report_payload["skill_id"] == "policy_briefing"
+    assert "policy_briefing" in report_payload["report_markdown"]
+
+
+def test_knowledge_search_endpoint(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    response = client.get("/api/knowledge/search", params={"q": "employment methodology"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["query"] == "employment methodology"
+    assert payload["results"]
+    assert any(item["source_type"] == "local_knowledge" for item in payload["results"])

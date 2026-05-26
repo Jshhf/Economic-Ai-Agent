@@ -6,6 +6,7 @@
   --accent: #0f766e;
   --accent-2: #b45309;
   --line: #d6d3d1;
+  --danger: #991b1b;
 }
 
 * {
@@ -85,10 +86,19 @@ a {
   gap: 20px;
 }
 
-.meta-grid {
+.meta-grid,
+.capability-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+
+.meta-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.capability-grid {
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 24px;
 }
 
 .meta-card {
@@ -118,14 +128,16 @@ a {
   flex-wrap: wrap;
 }
 
-.file-label {
+.file-label,
+.field-label {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 280px;
 }
 
-input[type="file"] {
+input[type="file"],
+select {
   padding: 10px;
   border: 1px dashed var(--line);
   border-radius: 12px;
@@ -167,13 +179,27 @@ button {
   flex-wrap: wrap;
 }
 
-.status-pill {
+.status-pill,
+.chip {
   display: inline-flex;
   padding: 8px 12px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.status-pill {
   text-transform: uppercase;
+}
+
+.chip {
+  background: rgba(15, 118, 110, 0.10);
+  color: var(--accent);
+}
+
+.chip-danger {
+  background: rgba(153, 27, 27, 0.12);
+  color: var(--danger);
 }
 
 .status-queued { background: #e0f2fe; color: #075985; }
@@ -209,6 +235,24 @@ button {
   font-family: Georgia, "Times New Roman", serif;
 }
 
+.detail-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.detail-list li {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-list p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -224,8 +268,17 @@ td {
 }
 
 .error-text {
-  color: #991b1b;
+  color: var(--danger);
   font-weight: 700;
+}
+
+.metrics-block {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(15, 23, 42, 0.03);
+  border-radius: 14px;
+  padding: 16px;
 }
 
 @media (max-width: 960px) {
@@ -236,7 +289,8 @@ td {
   }
 
   .hero-card,
-  .report-layout {
+  .report-layout,
+  .capability-grid {
     grid-template-columns: 1fr;
   }
 

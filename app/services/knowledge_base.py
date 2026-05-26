@@ -14,6 +14,9 @@ class KnowledgeBase:
             raise FileNotFoundError(f"Knowledge document not found: {target}")
         return target.read_text(encoding="utf-8")
 
+    def list_documents(self) -> list[str]:
+        return sorted(path.name for path in self.knowledge_dir.glob("*.md"))
+
     def read_indicator_definitions(self) -> str:
         return self.read_document("indicator_definitions.md")
 

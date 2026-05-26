@@ -4,6 +4,7 @@
   <div>
     <p class="eyebrow">Final Report</p>
     <h2>{{ job_id }}</h2>
+    <p class="lede">Skill: {{ report.skill_id }}</p>
   </div>
 </section>
 <section class="report-layout">
@@ -14,6 +15,22 @@
     <div id="report-charts" data-charts='{{ chart_json | safe }}'></div>
   </aside>
 </section>
+
+<section class="trace-card">
+  <h3>References</h3>
+  <ul class="detail-list">
+    {% for source in sources %}
+    <li>
+      <strong>{{ source.title }}</strong>
+      <p>{{ source.summary }}</p>
+      <span class="chip">{{ source.source_type }}</span>
+      <span class="chip">{{ source.provider }}</span>
+      {% if source.url %}<a href="{{ source.url }}" target="_blank" rel="noreferrer">open</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
 <script>
   (function () {
     const root = document.getElementById("report-charts");

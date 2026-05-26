@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.schemas import AgentRunRecord, JobStatusResponse, ToolCallRecord
+from app.schemas import AgentRunRecord, JobStatusResponse, SourceReference, ToolCallRecord
 
 
 def utcnow() -> datetime:
@@ -56,9 +56,11 @@ class Storage:
                     job_id TEXT PRIMARY KEY,
                     source_path TEXT NOT NULL,
                     original_filename TEXT NOT NULL,
+                    skill_id TEXT NOT NULL DEFAULT 'economic_report',
                     status TEXT NOT NULL,
                     current_stage TEXT NOT NULL,
                     error_message TEXT,
+                    failure_category TEXT,
                     created_at TEXT NOT NULL,
                     started_at TEXT,
                     finished_at TEXT
@@ -84,6 +86,7 @@ class Storage:
                     handoff_to TEXT,
                     input_summary TEXT,
                     output_summary TEXT,
+                    skill_id TEXT,
                     created_at TEXT NOT NULL,
                     finished_at TEXT
                 );
@@ -98,22 +101,57 @@ class Storage:
                     arguments_json TEXT,
                     result_summary TEXT,
                     success INTEGER,
+                    call_kind TEXT NOT NULL DEFAULT 'tool',
+                    provider TEXT,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
                     duration_ms INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS source_references (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    excerpt TEXT,
+                    url TEXT,
+                    score REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS metrics_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    labels_json TEXT,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            self._ensure_column(conn, "analysis_jobs", "skill_id", "TEXT NOT NULL DEFAULT 'economic_report'")
+            self._ensure_column(conn, "analysis_jobs", "failure_category", "TEXT")
+            self._ensure_column(conn, "agent_runs", "skill_id", "TEXT")
+            self._ensure_column(conn, "tool_call_logs", "call_kind", "TEXT NOT NULL DEFAULT 'tool'")
+            self._ensure_column(conn, "tool_call_logs", "provider", "TEXT")
 
-    def create_job(self, job_id: str, source_path: str, original_filename: str) -> None:
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def create_job(self, job_id: str, source_path: str, original_filename: str, *, skill_id: str) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO analysis_jobs (
-                    job_id, source_path, original_filename, status, current_stage, created_at
-                ) VALUES (?, ?, ?, 'queued', 'queued', ?)
+                    job_id, source_path, original_filename, skill_id, status, current_stage, created_at
+                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?)
                 """,
-                (job_id, source_path, original_filename, iso_now()),
+                (job_id, source_path, original_filename, skill_id, iso_now()),
             )
 
     def update_job_status(
@@ -123,11 +161,12 @@ class Storage:
         status: str,
         current_stage: str,
         error_message: str | None = None,
+        failure_category: str | None = None,
         started: bool = False,
         finished: bool = False,
     ) -> None:
-        fields = ["status = ?", "current_stage = ?", "error_message = ?"]
-        values: list[Any] = [status, current_stage, error_message]
+        fields = ["status = ?", "current_stage = ?", "error_message = ?", "failure_category = ?"]
+        values: list[Any] = [status, current_stage, error_message, failure_category]
         if started:
             fields.append("started_at = ?")
             values.append(iso_now())
@@ -153,10 +192,12 @@ class Storage:
             job_id=row["job_id"],
             status=row["status"],
             current_stage=row["current_stage"],
+            skill_id=row["skill_id"],
             created_at=datetime.fromisoformat(row["created_at"]),
             started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
             finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
             error_message=row["error_message"],
+            failure_category=row["failure_category"],
         )
 
     def get_job_source_path(self, job_id: str) -> str:
@@ -168,6 +209,16 @@ class Storage:
         if row is None:
             raise KeyError(job_id)
         return str(row["source_path"])
+
+    def get_job_skill_id(self, job_id: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT skill_id FROM analysis_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return str(row["skill_id"])
 
     def add_artifact(
         self,
@@ -216,14 +267,6 @@ class Storage:
             payload["content_text"] = row["content_text"]
         return payload
 
-    def list_artifacts(self, job_id: str) -> list[sqlite3.Row]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM artifacts WHERE job_id = ? ORDER BY id ASC",
-                (job_id,),
-            ).fetchall()
-        return list(rows)
-
     def log_agent_result(
         self,
         job_id: str,
@@ -235,14 +278,15 @@ class Storage:
         input_summary: str | None = None,
         output_summary: str | None = None,
         handoff_to: str | None = None,
+        skill_id: str | None = None,
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO agent_runs (
                     job_id, phase, agent_name, model_name, status, handoff_to,
-                    input_summary, output_summary, created_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    input_summary, output_summary, skill_id, created_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -253,6 +297,7 @@ class Storage:
                     handoff_to,
                     input_summary,
                     output_summary,
+                    skill_id,
                     iso_now(),
                     iso_now(),
                 ),
@@ -267,15 +312,17 @@ class Storage:
         agent_name: str,
         tool_name: str,
         arguments_json: str | None,
+        call_kind: str = "tool",
+        provider: str | None = None,
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tool_call_logs (
-                    job_id, call_id, phase, agent_name, tool_name, arguments_json, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    job_id, call_id, phase, agent_name, tool_name, arguments_json, call_kind, provider, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, call_id, phase, agent_name, tool_name, arguments_json, iso_now()),
+                (job_id, call_id, phase, agent_name, tool_name, arguments_json, call_kind, provider, iso_now()),
             )
 
     def log_tool_end(
@@ -302,6 +349,87 @@ class Storage:
                 (result_summary, int(success), iso_now(), duration_ms, job_id, call_id),
             )
 
+    def add_source_reference(self, job_id: str, source: SourceReference) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO source_references (
+                    job_id, source_id, source_type, provider, title, summary, excerpt, url, score, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    source.source_id,
+                    source.source_type,
+                    source.provider,
+                    source.title,
+                    source.summary,
+                    source.excerpt,
+                    source.url,
+                    source.score,
+                    iso_now(),
+                ),
+            )
+
+    def list_sources(self, job_id: str) -> list[SourceReference]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_id, source_type, provider, title, summary, excerpt, url, score
+                FROM source_references
+                WHERE job_id = ?
+                ORDER BY score DESC, id ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        return [
+            SourceReference(
+                source_id=row["source_id"],
+                source_type=row["source_type"],
+                provider=row["provider"],
+                title=row["title"],
+                summary=row["summary"],
+                excerpt=row["excerpt"],
+                url=row["url"],
+                score=float(row["score"]),
+            )
+            for row in rows
+        ]
+
+    def log_metric(self, metric_name: str, metric_value: float, *, job_id: str | None = None, labels: dict[str, Any] | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO metrics_log (job_id, metric_name, metric_value, labels_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    metric_name,
+                    metric_value,
+                    json.dumps(labels, ensure_ascii=False) if labels else None,
+                    iso_now(),
+                ),
+            )
+
+    def list_metrics(self, job_id: str | None = None) -> dict[str, Any]:
+        query = "SELECT metric_name, metric_value, labels_json FROM metrics_log"
+        params: tuple[Any, ...] = ()
+        if job_id is not None:
+            query += " WHERE job_id = ?"
+            params = (job_id,)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        metrics: dict[str, Any] = {}
+        for row in rows:
+            metrics.setdefault(row["metric_name"], []).append(
+                {
+                    "value": row["metric_value"],
+                    "labels": json.loads(row["labels_json"]) if row["labels_json"] else {},
+                }
+            )
+        return metrics
+
     def list_agent_runs(self, job_id: str) -> list[AgentRunRecord]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -318,6 +446,7 @@ class Storage:
                 handoff_to=row["handoff_to"],
                 input_summary=row["input_summary"],
                 output_summary=row["output_summary"],
+                skill_id=row["skill_id"],
                 created_at=datetime.fromisoformat(row["created_at"]),
                 finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
             )
@@ -342,6 +471,8 @@ class Storage:
                 started_at=datetime.fromisoformat(row["started_at"]),
                 finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
                 duration_ms=row["duration_ms"],
+                call_kind=row["call_kind"] or "tool",
+                provider=row["provider"],
             )
             for row in rows
         ]

@@ -22,6 +22,8 @@ class Settings:
     data_agent_model: str = os.getenv("DATA_AGENT_MODEL", "gpt-5.4-mini")
     economist_agent_model: str = os.getenv("ECONOMIST_AGENT_MODEL", "gpt-5.5")
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    observability_provider: str = os.getenv("OBSERVABILITY_PROVIDER", "opentelemetry")
+    rag_top_k: int = int(os.getenv("RAG_TOP_K", "5"))
 
     def ensure_directories(self, project_root: Path) -> None:
         for relative_path in (
@@ -40,4 +42,3 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_directories(PROJECT_ROOT)
     return settings
-

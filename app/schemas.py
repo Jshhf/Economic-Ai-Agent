@@ -7,6 +7,26 @@ from pydantic import BaseModel, Field, model_validator
 
 
 JobStatus = Literal["queued", "running", "reviewing", "completed", "failed"]
+FailureCategory = Literal[
+    "model_error",
+    "tool_error",
+    "rag_error",
+    "mcp_error",
+    "schema_validation_error",
+]
+CallKind = Literal["tool", "rag", "mcp"]
+SourceType = Literal["local_knowledge", "mcp_economic_data", "mcp_research", "dataset"]
+
+
+class SourceReference(BaseModel):
+    source_id: str
+    title: str
+    source_type: SourceType
+    provider: str
+    summary: str
+    excerpt: str | None = None
+    url: str | None = None
+    score: float = 0.0
 
 
 class DatasetOverview(BaseModel):
@@ -84,17 +104,30 @@ class FinalReport(BaseModel):
     risks: str
     conclusion: str
     next_observation_points: list[str]
+    skill_id: str = "economic_report"
+    skill_name: str = "Economic Report"
+    sources: list[SourceReference] = Field(default_factory=list)
+    cited_source_ids: list[str] = Field(default_factory=list)
 
     def to_markdown(self) -> str:
         observation_lines = "\n".join(f"- {item}" for item in self.next_observation_points)
+        source_lines = "\n".join(
+            f"- **{item.title}** ({item.provider})"
+            + (f": {item.summary}" if item.summary else "")
+            + (f" [{item.url}]({item.url})" if item.url else "")
+            for item in self.sources
+        )
+        source_block = f"\n## References\n{source_lines}\n" if source_lines else ""
         return (
-            "# 经济分析报告\n\n"
-            f"## 本期概览\n{self.overview}\n\n"
-            f"## 主要城市变化\n{self.city_changes}\n\n"
-            f"## 收入分层信号\n{self.income_signals}\n\n"
-            f"## 趋势与风险\n{self.risks}\n\n"
-            f"## 结论\n{self.conclusion}\n\n"
-            f"## 后续观察点\n{observation_lines}\n"
+            f"# Economic Analysis Report\n\n"
+            f"> Skill: `{self.skill_id}` ({self.skill_name})\n\n"
+            f"## Overview\n{self.overview}\n\n"
+            f"## City Changes\n{self.city_changes}\n\n"
+            f"## Income Signals\n{self.income_signals}\n\n"
+            f"## Risks\n{self.risks}\n\n"
+            f"## Conclusion\n{self.conclusion}\n\n"
+            f"## Next Observation Points\n{observation_lines}\n"
+            f"{source_block}"
         )
 
 
@@ -119,25 +152,52 @@ class ChartPayload(BaseModel):
     datasets: list[dict[str, Any]]
 
 
+class SkillDefinition(BaseModel):
+    skill_id: str
+    name: str
+    description: str
+    scenarios: list[str]
+    available_tools: list[str]
+    rag_enabled: bool
+    mcp_sources: list[str]
+    output_type: str = "FinalReport"
+
+
+class KnowledgeSearchResponse(BaseModel):
+    query: str
+    results: list[SourceReference]
+
+
+class JobSourcesResponse(BaseModel):
+    job_id: str
+    skill_id: str
+    sources: list[SourceReference]
+
+
 class CreateJobResponse(BaseModel):
     job_id: str
     status: JobStatus
+    skill_id: str
 
 
 class JobStatusResponse(BaseModel):
     job_id: str
     status: JobStatus
     current_stage: str
+    skill_id: str
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error_message: str | None = None
+    failure_category: FailureCategory | None = None
 
 
 class ReportResponse(BaseModel):
     report_markdown: str
     chart_payloads: list[ChartPayload]
     evidence_summary: EvidencePack
+    skill_id: str
+    sources: list[SourceReference] = Field(default_factory=list)
 
 
 class AgentRunRecord(BaseModel):
@@ -149,6 +209,7 @@ class AgentRunRecord(BaseModel):
     handoff_to: str | None = None
     input_summary: str | None = None
     output_summary: str | None = None
+    skill_id: str | None = None
     created_at: datetime
     finished_at: datetime | None = None
 
@@ -164,8 +225,11 @@ class ToolCallRecord(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     duration_ms: int | None = None
+    call_kind: CallKind = "tool"
+    provider: str | None = None
 
 
 class TraceResponse(BaseModel):
     agent_runs: list[AgentRunRecord]
     tool_calls: list[ToolCallRecord]
+    metrics: dict[str, Any] = Field(default_factory=dict)
