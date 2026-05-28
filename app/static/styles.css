@@ -101,6 +101,10 @@ a {
   margin-top: 24px;
 }
 
+.secondary-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .meta-card {
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -253,6 +257,46 @@ button {
   color: var(--muted);
 }
 
+.upgrade-card {
+  background:
+    linear-gradient(180deg, rgba(15, 118, 110, 0.06), rgba(255, 253, 248, 0.96)),
+    var(--panel);
+}
+
+.disclosure-card {
+  border: 1px solid rgba(15, 118, 110, 0.18);
+}
+
+.disclosure-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.plan-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.mini-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,239,229,0.7));
+}
+
+.mini-card h4 {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.compact-list {
+  gap: 10px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -290,7 +334,10 @@ td {
 
   .hero-card,
   .report-layout,
-  .capability-grid {
+  .capability-grid,
+  .secondary-grid,
+  .disclosure-grid,
+  .plan-grid {
     grid-template-columns: 1fr;
   }
 

@@ -38,6 +38,57 @@
   </ul>
 </section>
 
+<section class="trace-card disclosure-card">
+  <h3>Current Skill Disclosure</h3>
+  <p><strong>Stage:</strong> {{ stage_disclosure.stage }}</p>
+  <p><strong>Stage goal:</strong> {{ stage_disclosure.stage_goal }}</p>
+  <p><strong>Why this disclosure:</strong> {{ stage_disclosure.disclosure_rationale or "-" }}</p>
+  <div class="status-row">
+    <span class="chip">output: {{ stage_disclosure.output_type or "-" }}</span>
+    <span class="chip">rag: {{ stage_disclosure.rag_enabled }}</span>
+  </div>
+  <div class="disclosure-grid">
+    <article class="mini-card">
+      <h4>Allowed Tools</h4>
+      <ul class="detail-list compact-list">
+        {% for tool_name in stage_disclosure.allowed_tools %}
+        <li>{{ tool_name }}</li>
+        {% else %}
+        <li>No data tools disclosed in this stage.</li>
+        {% endfor %}
+      </ul>
+    </article>
+    <article class="mini-card">
+      <h4>MCP Sources</h4>
+      <ul class="detail-list compact-list">
+        {% for source_name in stage_disclosure.mcp_sources %}
+        <li>{{ source_name }}</li>
+        {% else %}
+        <li>No external sources disclosed in this stage.</li>
+        {% endfor %}
+      </ul>
+    </article>
+  </div>
+</section>
+
+<section class="trace-card disclosure-card">
+  <h3>Progressive Disclosure Plan</h3>
+  <div class="plan-grid">
+    {% for item in disclosure_plan %}
+    <article class="mini-card">
+      <div class="status-row">
+        <span class="chip">{{ item.stage }}</span>
+        {% if item.stage == stage_disclosure.stage %}<span class="chip">current</span>{% endif %}
+      </div>
+      <p><strong>Goal:</strong> {{ item.stage_goal }}</p>
+      <p><strong>RAG:</strong> {{ item.rag_enabled }}</p>
+      <p><strong>Tools:</strong> {{ item.allowed_tools | join(", ") if item.allowed_tools else "none" }}</p>
+      <p><strong>MCP:</strong> {{ item.mcp_sources | join(", ") if item.mcp_sources else "none" }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
 {% if report %}
 <section class="report-layout">
   <article class="report-card markdown-body">

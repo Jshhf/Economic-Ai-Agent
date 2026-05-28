@@ -14,7 +14,7 @@ from app.schemas import CreateJobResponse, JobStatusResponse, KnowledgeSearchRes
 from app.services.knowledge_base import KnowledgeBase
 from app.services.mcp import build_default_mcp_registry
 from app.services.rag import RagService
-from app.skills import list_skills
+from app.skills import DEFAULT_STAGE_ORDER, get_skill, get_stage_disclosure, list_skills
 from app.storage import Storage
 
 
@@ -98,6 +98,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chart_json = json.dumps([chart.model_dump() for chart in report.chart_payloads], ensure_ascii=False)
         elif job.status == "failed":
             sources = runner.get_sources_response(job_id).sources
+        disclosure_stage = goal_summary.summary.current_stage if goal_summary else job.current_stage
+        stage_disclosure = get_stage_disclosure(job.skill_id, disclosure_stage)
+        skill_definition = get_skill(job.skill_id)
+        disclosure_plan = [
+            skill_definition.stage_disclosures[stage]
+            for stage in DEFAULT_STAGE_ORDER
+            if stage in skill_definition.stage_disclosures
+        ]
 
         return templates.TemplateResponse(
             request,
@@ -109,6 +117,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "report_html": report_html,
                 "trace": trace,
                 "goal_summary": goal_summary,
+                "stage_disclosure": stage_disclosure,
+                "disclosure_plan": disclosure_plan,
                 "chart_json": chart_json,
                 "sources": sources,
             },

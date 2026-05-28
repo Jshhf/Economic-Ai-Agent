@@ -42,6 +42,24 @@
 </section>
 
 <section class="capability-grid">
+  <article class="trace-card upgrade-card">
+    <h3>Latest Runtime Upgrades</h3>
+    <ul class="detail-list">
+      <li>
+        <strong>Goal Summary / Context Mainline</strong>
+        <p>Persist the latest task goal, current stage, key findings, and next action so long-running jobs keep a stable mainline.</p>
+      </li>
+      <li>
+        <strong>Progressive Skill Disclosure</strong>
+        <p>Reveal different tools, RAG, and MCP sources by phase instead of exposing the full capability surface at once.</p>
+      </li>
+      <li>
+        <strong>Traceable Runtime Layers</strong>
+        <p>Keep `tool / rag / mcp` calls visible so the upgrade value is observable in the UI and interview demos.</p>
+      </li>
+    </ul>
+  </article>
+
   <article class="trace-card">
     <h3>Available Skills</h3>
     <ul class="detail-list">
@@ -54,7 +72,9 @@
       {% endfor %}
     </ul>
   </article>
+</section>
 
+<section class="capability-grid secondary-grid">
   <article class="trace-card">
     <h3>MCP Sources</h3>
     <ul class="detail-list">
