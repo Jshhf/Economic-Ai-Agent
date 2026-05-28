@@ -99,12 +99,15 @@ def test_api_job_flow_with_default_skill(tmp_path: Path) -> None:
     report_response = client.get(f"/api/jobs/{job_id}/report")
     trace_response = client.get(f"/api/jobs/{job_id}/trace")
     sources_response = client.get(f"/api/jobs/{job_id}/sources")
+    goal_summary_response = client.get(f"/api/jobs/{job_id}/goal-summary")
     assert report_response.status_code == 200
     assert trace_response.status_code == 200
     assert sources_response.status_code == 200
+    assert goal_summary_response.status_code == 200
     report_payload = report_response.json()
     trace_payload = trace_response.json()
     sources_payload = sources_response.json()
+    goal_summary_payload = goal_summary_response.json()
     assert "Economic Analysis Report" in report_payload["report_markdown"]
     assert report_payload["skill_id"] == "economic_report"
     assert len(report_payload["chart_payloads"]) == 3
@@ -112,6 +115,10 @@ def test_api_job_flow_with_default_skill(tmp_path: Path) -> None:
     assert any(row["call_kind"] == "rag" for row in trace_payload["tool_calls"])
     assert any(row["call_kind"] == "mcp" for row in trace_payload["tool_calls"])
     assert sources_payload["sources"]
+    assert goal_summary_payload["summary"]["current_stage"] == "completed"
+    assert goal_summary_payload["summary"]["next_action"] == "Task completed"
+    assert "data_analysis" in goal_summary_payload["summary"]["completed_steps"]
+    assert goal_summary_payload["version"] >= 5
 
 
 def test_policy_briefing_skill_path(tmp_path: Path) -> None:
@@ -136,6 +143,65 @@ def test_policy_briefing_skill_path(tmp_path: Path) -> None:
     report_payload = report_response.json()
     assert report_payload["skill_id"] == "policy_briefing"
     assert "policy_briefing" in report_payload["report_markdown"]
+
+
+def test_goal_summary_created_on_job_creation(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    with DATA_FILE.open("rb") as handle:
+        response = client.post(
+            "/api/jobs",
+            files={"file": ("employment.csv", handle, "text/csv")},
+            data={"skill_id": "economic_report"},
+        )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    summary_response = client.get(f"/api/jobs/{job_id}/goal-summary")
+    assert summary_response.status_code == 200
+    payload = summary_response.json()
+    assert payload["summary"]["overall_goal"]
+    assert payload["summary"]["next_action"]
+
+
+def test_anomaly_investigation_goal_summary_follow_up_path(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    with DATA_FILE.open("rb") as handle:
+        response = client.post(
+            "/api/jobs",
+            files={"file": ("employment.csv", handle, "text/csv")},
+            data={"skill_id": "anomaly_investigation"},
+        )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    payload = wait_for_completion(client, job_id)
+    assert payload["status"] == "completed", payload
+
+    summary_response = client.get(f"/api/jobs/{job_id}/goal-summary")
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()
+    assert summary_payload["summary"]["current_stage"] == "completed"
+    assert summary_payload["summary"]["next_action"] == "Task completed"
+    assert summary_payload["version"] >= 6
+    assert any(
+        step in summary_payload["summary"]["completed_steps"]
+        for step in ["economist_follow_up", "economist_writer"]
+    )
+
+
+def test_goal_summary_api_not_found(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    response = client.get("/api/jobs/missing-job/goal-summary")
+    assert response.status_code == 404
 
 
 def test_knowledge_search_endpoint(tmp_path: Path) -> None:

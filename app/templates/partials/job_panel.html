@@ -11,6 +11,33 @@
   {% if job.error_message %}<p class="error-text">Error: {{ job.error_message }}</p>{% endif %}
 </div>
 
+<section class="trace-card">
+  <h3>Goal Summary</h3>
+  <p><strong>Overall goal:</strong> {{ goal_summary.summary.overall_goal }}</p>
+  <p><strong>Current stage:</strong> {{ goal_summary.summary.current_stage }}</p>
+  <p><strong>Next action:</strong> {{ goal_summary.summary.next_action or "-" }}</p>
+  <div class="status-row">
+    <span class="chip">version: {{ goal_summary.version }}</span>
+    <span class="chip">skill: {{ goal_summary.skill_id }}</span>
+  </div>
+  <h4>Completed Steps</h4>
+  <ul class="detail-list">
+    {% for step in goal_summary.summary.completed_steps %}
+    <li>{{ step }}</li>
+    {% else %}
+    <li>No completed steps yet.</li>
+    {% endfor %}
+  </ul>
+  <h4>Key Findings</h4>
+  <ul class="detail-list">
+    {% for finding in goal_summary.summary.key_findings %}
+    <li>{{ finding }}</li>
+    {% else %}
+    <li>No key findings recorded yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+
 {% if report %}
 <section class="report-layout">
   <article class="report-card markdown-body">

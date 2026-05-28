@@ -87,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         report = None
         trace = runner.get_trace_response(job_id)
+        goal_summary = runner.get_goal_summary_response(job_id)
         report_html = None
         chart_json = "[]"
         sources = []
@@ -107,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "report": report,
                 "report_html": report_html,
                 "trace": trace,
+                "goal_summary": goal_summary,
                 "chart_json": chart_json,
                 "sources": sources,
             },
@@ -160,6 +162,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/trace")
     async def get_trace_api(job_id: str) -> dict[str, object]:
         return runner.get_trace_response(job_id).model_dump()
+
+    @app.get("/api/jobs/{job_id}/goal-summary")
+    async def get_goal_summary_api(job_id: str) -> dict[str, object]:
+        try:
+            return runner.get_goal_summary_response(job_id).model_dump()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Goal summary not found") from exc
 
     @app.get("/api/jobs/{job_id}/sources")
     async def get_job_sources(job_id: str) -> dict[str, object]:

@@ -55,6 +55,23 @@ class AgentRuntime:
         return get_skill_runtime(self.skill_id)
 
 
+def build_goal_summary_block(runtime: AgentRuntime) -> str:
+    try:
+        goal_summary = runtime.storage.get_latest_goal_summary(runtime.job_id).summary
+    except KeyError:
+        return "Goal Summary:\n- unavailable"
+    return (
+        "Goal Summary:\n"
+        f"- overall_goal: {goal_summary.overall_goal}\n"
+        f"- current_stage: {goal_summary.current_stage}\n"
+        f"- completed_steps: {goal_summary.completed_steps}\n"
+        f"- resolved_questions: {goal_summary.resolved_questions}\n"
+        f"- open_questions: {goal_summary.open_questions}\n"
+        f"- key_findings: {goal_summary.key_findings}\n"
+        f"- next_action: {goal_summary.next_action or 'none'}"
+    )
+
+
 def _call_id(name: str) -> str:
     return f"{name}-{uuid.uuid4().hex}"
 
@@ -319,21 +336,25 @@ class AnalysisRunHooks(RunHooks[AgentRuntime]):
 
 def _data_agent_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[AgentRuntime]) -> str:
     skill = get_skill(ctx.context.skill_id)
+    goal_summary = build_goal_summary_block(ctx.context)
     return (
         f"You are the Data Analyst Agent for skill `{skill.skill_id}` ({skill.name}). "
         "Use dataset tools to inspect the data, measure latest employment changes, rank cities, "
         "compare income groups, identify anomalies, and inspect chart payloads. "
-        "Return a strict EvidencePack JSON object with concise findings."
+        "Return a strict EvidencePack JSON object with concise findings.\n\n"
+        f"{goal_summary}"
     )
 
 
 def _follow_up_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[AgentRuntime]) -> str:
     request = ctx.context.follow_up_request
     request_json = request.model_dump_json(indent=2) if request else "{}"
+    goal_summary = build_goal_summary_block(ctx.context)
     return (
         "You are the Data Follow-up Agent. A senior economist requested supplemental analysis. "
         "Use the available data tools and return a strict SupplementalEvidence object. "
-        f"The requested follow-up payload is:\n{request_json}"
+        f"The requested follow-up payload is:\n{request_json}\n\n"
+        f"{goal_summary}"
     )
 
 
@@ -346,12 +367,13 @@ def _economist_writer_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agen
         else "{}"
     )
     source_names = ", ".join(source.title for source in ctx.context.source_references[:6]) or "none"
+    goal_summary = build_goal_summary_block(ctx.context)
     return (
         f"You are the Economist Agent for skill `{skill.skill_id}` ({skill.name}). "
         "Use rag_search and mcp_search before returning. "
         "Generate a Chinese FinalReport with overview, city changes, income signals, risks, conclusion, "
         "and next observation points. Reference evidence and sources. "
-        f"Known sources: {source_names}\n\nEvidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
+        f"Known sources: {source_names}\n\n{goal_summary}\n\nEvidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
     )
 
 
@@ -711,7 +733,8 @@ def run_data_analyst_agent(runtime: AgentRuntime) -> EvidencePack:
         input=(
             f"Analyze the uploaded employment dataset for skill `{runtime.skill_id}`. "
             "You must call dataset tools before returning. "
-            "Return a strict EvidencePack with key findings and data quality notes."
+            "Return a strict EvidencePack with key findings and data quality notes.\n\n"
+            f"{build_goal_summary_block(runtime)}"
         ),
         context=runtime,
         hooks=AnalysisRunHooks(),
@@ -733,7 +756,7 @@ def run_economist_agent(runtime: AgentRuntime) -> FollowUpRequest | FinalReport:
             f"Review the evidence pack for skill `{runtime.skill_id}`. "
             "If it is sufficient, return FinalReport in Chinese. "
             "If not, use handoff to request focused follow-up analysis.\n\n"
-            f"{evidence_json}"
+            f"{build_goal_summary_block(runtime)}\n\n{evidence_json}"
         ),
         context=runtime,
         hooks=AnalysisRunHooks(),
@@ -772,6 +795,7 @@ def run_economist_writer_agent(runtime: AgentRuntime) -> FinalReport:
         writer_agent,
         input=(
             f"Write the final Chinese economic report for skill `{runtime.skill_id}` based on the evidence pack and supplemental evidence.\n\n"
+            f"{build_goal_summary_block(runtime)}\n\n"
             f"EvidencePack:\n{evidence_json}\n\nSupplementalEvidence:\n{supplemental_json}"
         ),
         context=runtime,

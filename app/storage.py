@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.schemas import AgentRunRecord, JobStatusResponse, SourceReference, ToolCallRecord
+from app.schemas import AgentRunRecord, GoalSummary, GoalSummaryResponse, JobStatusResponse, SourceReference, ToolCallRecord
 
 
 def utcnow() -> datetime:
@@ -128,6 +128,15 @@ class Storage:
                     metric_name TEXT NOT NULL,
                     metric_value REAL NOT NULL,
                     labels_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS goal_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    summary_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 """
@@ -392,6 +401,75 @@ class Storage:
                 excerpt=row["excerpt"],
                 url=row["url"],
                 score=float(row["score"]),
+            )
+            for row in rows
+        ]
+
+    def create_goal_summary(self, job_id: str, skill_id: str, summary: GoalSummary) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO goal_summaries (job_id, skill_id, version, summary_json, created_at)
+                VALUES (?, ?, 1, ?, ?)
+                """,
+                (job_id, skill_id, summary.model_dump_json(), iso_now()),
+            )
+
+    def append_goal_summary(self, job_id: str, skill_id: str, summary: GoalSummary) -> None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS latest_version FROM goal_summaries WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            next_version = int(row["latest_version"]) + 1 if row is not None else 1
+            conn.execute(
+                """
+                INSERT INTO goal_summaries (job_id, skill_id, version, summary_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (job_id, skill_id, next_version, summary.model_dump_json(), iso_now()),
+            )
+
+    def get_latest_goal_summary(self, job_id: str) -> GoalSummaryResponse:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, skill_id, version, summary_json, created_at
+                FROM goal_summaries
+                WHERE job_id = ?
+                ORDER BY version DESC, id DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError((job_id, "goal_summary"))
+        return GoalSummaryResponse(
+            job_id=row["job_id"],
+            skill_id=row["skill_id"],
+            version=int(row["version"]),
+            summary=GoalSummary.model_validate_json(row["summary_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def list_goal_summaries(self, job_id: str) -> list[GoalSummaryResponse]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, skill_id, version, summary_json, created_at
+                FROM goal_summaries
+                WHERE job_id = ?
+                ORDER BY version ASC, id ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        return [
+            GoalSummaryResponse(
+                job_id=row["job_id"],
+                skill_id=row["skill_id"],
+                version=int(row["version"]),
+                summary=GoalSummary.model_validate_json(row["summary_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows
         ]

@@ -174,6 +174,26 @@ class JobSourcesResponse(BaseModel):
     sources: list[SourceReference]
 
 
+class GoalSummary(BaseModel):
+    overall_goal: str
+    user_constraints: list[str] = Field(default_factory=list)
+    output_requirements: list[str] = Field(default_factory=list)
+    current_stage: str
+    completed_steps: list[str] = Field(default_factory=list)
+    resolved_questions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    key_findings: list[str] = Field(default_factory=list)
+    next_action: str | None = None
+
+
+class GoalSummaryResponse(BaseModel):
+    job_id: str
+    skill_id: str
+    version: int
+    summary: GoalSummary
+    created_at: datetime
+
+
 class CreateJobResponse(BaseModel):
     job_id: str
     status: JobStatus
