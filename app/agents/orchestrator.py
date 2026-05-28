@@ -23,7 +23,7 @@ from app.services.knowledge_base import KnowledgeBase
 from app.services.mcp import MCPRegistry, build_default_mcp_registry
 from app.services.observability import ObservabilityService
 from app.services.rag import RagService
-from app.skills import SkillRuntimeConfig, get_skill, get_skill_runtime
+from app.skills import SkillRuntimeConfig, get_skill, get_skill_runtime, get_stage_disclosure
 from app.storage import Storage, summarize_payload
 
 
@@ -54,6 +54,10 @@ class AgentRuntime:
     def skill(self) -> SkillRuntimeConfig:
         return get_skill_runtime(self.skill_id)
 
+    @property
+    def stage_disclosure(self) -> Any:
+        return get_stage_disclosure(self.skill_id, self.phase)
+
 
 def build_goal_summary_block(runtime: AgentRuntime) -> str:
     try:
@@ -69,6 +73,22 @@ def build_goal_summary_block(runtime: AgentRuntime) -> str:
         f"- open_questions: {goal_summary.open_questions}\n"
         f"- key_findings: {goal_summary.key_findings}\n"
         f"- next_action: {goal_summary.next_action or 'none'}"
+    )
+
+
+def build_skill_disclosure_block(runtime: AgentRuntime) -> str:
+    disclosure = runtime.stage_disclosure
+    allowed_tools = ", ".join(disclosure.allowed_tools) or "none"
+    allowed_sources = ", ".join(disclosure.mcp_sources) or "none"
+    return (
+        "Skill Disclosure:\n"
+        f"- stage: {disclosure.stage}\n"
+        f"- stage_goal: {disclosure.stage_goal}\n"
+        f"- allowed_tools: {allowed_tools}\n"
+        f"- rag_enabled: {disclosure.rag_enabled}\n"
+        f"- mcp_sources: {allowed_sources}\n"
+        f"- output_type: {disclosure.output_type or 'unspecified'}\n"
+        f"- rationale: {disclosure.disclosure_rationale or 'none'}"
     )
 
 
@@ -254,10 +274,17 @@ def build_data_tools(agent_name: str) -> list[Any]:
     ]
 
 
-def build_knowledge_tools(agent_name: str) -> list[Any]:
+def build_knowledge_tools(
+    agent_name: str,
+    *,
+    rag_enabled: bool,
+    allowed_mcp_sources: list[str],
+) -> list[Any]:
     @function_tool
     def rag_search(ctx: RunContextWrapper[AgentRuntime], query: str) -> list[dict[str, Any]]:
         runtime = _tool_wrapper(ctx)
+        if not rag_enabled:
+            raise ValueError(f"rag_search is not disclosed during phase `{runtime.phase}`.")
         call_id = _log_call_start(
             runtime,
             agent_name=agent_name,
@@ -280,6 +307,10 @@ def build_knowledge_tools(agent_name: str) -> list[Any]:
     @function_tool
     def mcp_search(ctx: RunContextWrapper[AgentRuntime], source_name: str, query: str) -> list[dict[str, Any]]:
         runtime = _tool_wrapper(ctx)
+        if source_name not in allowed_mcp_sources:
+            raise ValueError(
+                f"mcp source `{source_name}` is not disclosed during phase `{runtime.phase}`."
+            )
         call_id = _log_call_start(
             runtime,
             agent_name=agent_name,
@@ -299,7 +330,40 @@ def build_knowledge_tools(agent_name: str) -> list[Any]:
             _log_call_end(runtime, call_id=call_id, result={"error": str(exc)}, success=False)
             raise
 
-    return [rag_search, mcp_search]
+    tools: list[Any] = []
+    if rag_enabled:
+        tools.append(rag_search)
+    if allowed_mcp_sources:
+        tools.append(mcp_search)
+    return tools
+
+
+def _filter_tools_by_name(tools: list[Any], allowed_tool_names: list[str]) -> list[Any]:
+    if not allowed_tool_names:
+        return []
+    allowed = set(allowed_tool_names)
+    filtered: list[Any] = []
+    for tool in tools:
+        name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+        if name in allowed:
+            filtered.append(tool)
+    return filtered
+
+
+def _build_stage_toolset(runtime: AgentRuntime, agent_name: str) -> list[Any]:
+    disclosure = runtime.stage_disclosure
+    tools: list[Any] = []
+    if disclosure.allowed_tools:
+        tools.extend(_filter_tools_by_name(build_data_tools(agent_name), disclosure.allowed_tools))
+    if disclosure.rag_enabled or disclosure.mcp_sources:
+        tools.extend(
+            build_knowledge_tools(
+                agent_name,
+                rag_enabled=disclosure.rag_enabled,
+                allowed_mcp_sources=disclosure.mcp_sources,
+            )
+        )
+    return tools
 
 
 class AnalysisRunHooks(RunHooks[AgentRuntime]):
@@ -337,12 +401,13 @@ class AnalysisRunHooks(RunHooks[AgentRuntime]):
 def _data_agent_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[AgentRuntime]) -> str:
     skill = get_skill(ctx.context.skill_id)
     goal_summary = build_goal_summary_block(ctx.context)
+    disclosure = build_skill_disclosure_block(ctx.context)
     return (
         f"You are the Data Analyst Agent for skill `{skill.skill_id}` ({skill.name}). "
         "Use dataset tools to inspect the data, measure latest employment changes, rank cities, "
         "compare income groups, identify anomalies, and inspect chart payloads. "
         "Return a strict EvidencePack JSON object with concise findings.\n\n"
-        f"{goal_summary}"
+        f"{goal_summary}\n\n{disclosure}"
     )
 
 
@@ -350,11 +415,12 @@ def _follow_up_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agent[Agent
     request = ctx.context.follow_up_request
     request_json = request.model_dump_json(indent=2) if request else "{}"
     goal_summary = build_goal_summary_block(ctx.context)
+    disclosure = build_skill_disclosure_block(ctx.context)
     return (
         "You are the Data Follow-up Agent. A senior economist requested supplemental analysis. "
         "Use the available data tools and return a strict SupplementalEvidence object. "
         f"The requested follow-up payload is:\n{request_json}\n\n"
-        f"{goal_summary}"
+        f"{goal_summary}\n\n{disclosure}"
     )
 
 
@@ -368,19 +434,27 @@ def _economist_writer_instructions(ctx: RunContextWrapper[AgentRuntime], _: Agen
     )
     source_names = ", ".join(source.title for source in ctx.context.source_references[:6]) or "none"
     goal_summary = build_goal_summary_block(ctx.context)
+    disclosure = build_skill_disclosure_block(ctx.context)
     return (
         f"You are the Economist Agent for skill `{skill.skill_id}` ({skill.name}). "
         "Use rag_search and mcp_search before returning. "
         "Generate a Chinese FinalReport with overview, city changes, income signals, risks, conclusion, "
         "and next observation points. Reference evidence and sources. "
-        f"Known sources: {source_names}\n\n{goal_summary}\n\nEvidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
+        f"Known sources: {source_names}\n\n{goal_summary}\n\n{disclosure}\n\nEvidence pack:\n{evidence}\n\nSupplemental evidence:\n{supplemental}"
     )
 
 
 def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[AgentRuntime], Agent[AgentRuntime]]:
-    data_tools = build_data_tools("Data Analyst Agent")
-    knowledge_tools = build_knowledge_tools("Economist Agent")
-    follow_up_tools = build_data_tools("Data Follow-up Agent")
+    original_phase = runtime.phase
+    runtime.phase = "data_analysis"
+    data_tools = _build_stage_toolset(runtime, "Data Analyst Agent")
+    runtime.phase = "economist_review"
+    review_tools = _build_stage_toolset(runtime, "Economist Review Agent")
+    runtime.phase = "economist_follow_up"
+    follow_up_tools = _build_stage_toolset(runtime, "Data Follow-up Agent")
+    runtime.phase = "economist_writer"
+    writer_tools = _build_stage_toolset(runtime, "Economist Writer Agent")
+    runtime.phase = original_phase
 
     follow_up_agent = Agent[AgentRuntime](
         name="Data Follow-up Agent",
@@ -405,7 +479,7 @@ def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[Agen
             "If you need more support, hand off to the Data Follow-up Agent with a structured "
             "FollowUpRequest that names the required tools and focus cities or income groups."
         ),
-        tools=knowledge_tools,
+        tools=review_tools,
         handoffs=[
             handoff(
                 follow_up_agent,
@@ -423,7 +497,7 @@ def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[Agen
         name="Economist Writer Agent",
         handoff_description="Turns evidence into the final Chinese report.",
         instructions=_economist_writer_instructions,
-        tools=knowledge_tools,
+        tools=writer_tools,
         model=runtime.settings.economist_agent_model,
         model_settings=ModelSettings(tool_choice="required", parallel_tool_calls=False, temperature=0.2),
         output_type=FinalReport,
@@ -444,9 +518,10 @@ def build_agents(runtime: AgentRuntime) -> tuple[Agent[AgentRuntime], Agent[Agen
 
 def _build_local_sources(runtime: AgentRuntime) -> list[SourceReference]:
     query = f"{runtime.skill_id} employment trend anomalies methodology policy"
-    rag_sources = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
+    disclosure = runtime.stage_disclosure
+    rag_sources = runtime.rag.search(query, limit=runtime.settings.rag_top_k) if disclosure.rag_enabled else []
     mcp_sources: list[SourceReference] = []
-    for source_name in get_skill(runtime.skill_id).mcp_sources:
+    for source_name in disclosure.mcp_sources:
         mcp_sources.extend(runtime.mcp_registry.search(source_name, query, limit=2))
     return _register_sources(runtime, rag_sources + mcp_sources)
 
@@ -678,20 +753,22 @@ def _build_local_report(runtime: AgentRuntime) -> FinalReport:
 def _prime_fallback_sources(runtime: AgentRuntime) -> None:
     if runtime.source_references:
         return
+    disclosure = runtime.stage_disclosure
     query = f"{runtime.skill_id} employment anomalies policy methodology"
-    rag_call_id = _log_call_start(
-        runtime,
-        agent_name="Economist Writer Agent",
-        tool_name="rag_search",
-        arguments={"query": query},
-        call_kind="rag",
-        provider="local-knowledge",
-    )
-    rag_result = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
-    _register_sources(runtime, rag_result)
-    _log_call_end(runtime, call_id=rag_call_id, result=[item.model_dump() for item in rag_result], success=True)
+    if disclosure.rag_enabled:
+        rag_call_id = _log_call_start(
+            runtime,
+            agent_name="Economist Writer Agent",
+            tool_name="rag_search",
+            arguments={"query": query},
+            call_kind="rag",
+            provider="local-knowledge",
+        )
+        rag_result = runtime.rag.search(query, limit=runtime.settings.rag_top_k)
+        _register_sources(runtime, rag_result)
+        _log_call_end(runtime, call_id=rag_call_id, result=[item.model_dump() for item in rag_result], success=True)
 
-    for source_name in get_skill(runtime.skill_id).mcp_sources:
+    for source_name in disclosure.mcp_sources:
         call_id = _log_call_start(
             runtime,
             agent_name="Economist Writer Agent",
@@ -734,7 +811,8 @@ def run_data_analyst_agent(runtime: AgentRuntime) -> EvidencePack:
             f"Analyze the uploaded employment dataset for skill `{runtime.skill_id}`. "
             "You must call dataset tools before returning. "
             "Return a strict EvidencePack with key findings and data quality notes.\n\n"
-            f"{build_goal_summary_block(runtime)}"
+            f"{build_goal_summary_block(runtime)}\n\n"
+            f"{build_skill_disclosure_block(runtime)}"
         ),
         context=runtime,
         hooks=AnalysisRunHooks(),
@@ -756,7 +834,8 @@ def run_economist_agent(runtime: AgentRuntime) -> FollowUpRequest | FinalReport:
             f"Review the evidence pack for skill `{runtime.skill_id}`. "
             "If it is sufficient, return FinalReport in Chinese. "
             "If not, use handoff to request focused follow-up analysis.\n\n"
-            f"{build_goal_summary_block(runtime)}\n\n{evidence_json}"
+            f"{build_goal_summary_block(runtime)}\n\n"
+            f"{build_skill_disclosure_block(runtime)}\n\n{evidence_json}"
         ),
         context=runtime,
         hooks=AnalysisRunHooks(),
@@ -796,6 +875,7 @@ def run_economist_writer_agent(runtime: AgentRuntime) -> FinalReport:
         input=(
             f"Write the final Chinese economic report for skill `{runtime.skill_id}` based on the evidence pack and supplemental evidence.\n\n"
             f"{build_goal_summary_block(runtime)}\n\n"
+            f"{build_skill_disclosure_block(runtime)}\n\n"
             f"EvidencePack:\n{evidence_json}\n\nSupplementalEvidence:\n{supplemental_json}"
         ),
         context=runtime,

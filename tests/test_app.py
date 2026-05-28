@@ -10,7 +10,7 @@ from app.main import create_app
 from app.services.analytics import AnalyticsService
 from app.services.data_loader import load_employment_data
 from app.services.rag import RagService
-from app.skills import list_skills
+from app.skills import get_stage_disclosure, list_skills
 
 
 DATA_FILE = PROJECT_ROOT / "data" / "Employment - City - Weekly.csv"
@@ -69,6 +69,24 @@ def test_skill_registry_contract() -> None:
         "anomaly_investigation",
         "policy_briefing",
     }
+    economic_report = next(skill for skill in skills if skill.skill_id == "economic_report")
+    assert "data_analysis" in economic_report.stage_disclosures
+    assert "economist_writer" in economic_report.stage_disclosures
+
+
+def test_progressive_skill_disclosure_contract() -> None:
+    data_stage = get_stage_disclosure("economic_report", "data_analysis")
+    review_stage = get_stage_disclosure("economic_report", "economist_review")
+    follow_up_stage = get_stage_disclosure("economic_report", "economist_follow_up")
+    writer_stage = get_stage_disclosure("economic_report", "economist_writer")
+
+    assert "inspect_dataset" in data_stage.allowed_tools
+    assert not data_stage.rag_enabled
+    assert review_stage.rag_enabled
+    assert review_stage.mcp_sources == ["economic-data"]
+    assert "city_trend" in follow_up_stage.allowed_tools
+    assert writer_stage.allowed_tools == []
+    assert writer_stage.rag_enabled
 
 
 def test_rag_service_returns_local_knowledge() -> None:

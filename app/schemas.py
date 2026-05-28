@@ -161,6 +161,17 @@ class SkillDefinition(BaseModel):
     rag_enabled: bool
     mcp_sources: list[str]
     output_type: str = "FinalReport"
+    stage_disclosures: dict[str, "SkillStageDisclosure"] = Field(default_factory=dict)
+
+
+class SkillStageDisclosure(BaseModel):
+    stage: str
+    stage_goal: str
+    allowed_tools: list[str] = Field(default_factory=list)
+    rag_enabled: bool = False
+    mcp_sources: list[str] = Field(default_factory=list)
+    output_type: str | None = None
+    disclosure_rationale: str | None = None
 
 
 class KnowledgeSearchResponse(BaseModel):
